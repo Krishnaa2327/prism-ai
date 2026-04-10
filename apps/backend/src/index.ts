@@ -22,6 +22,7 @@ import activationRoutes from './routes/activation';
 import kbRoutes from './routes/kb';
 import usersRoutes from './routes/users';
 import escalationsRoutes from './routes/escalations';
+import failuresRoutes from './routes/failures';
 import { prisma } from './lib/prisma';
 import { errorHandler } from './middleware/errorHandler';
 import { attachWebSocketServer } from './lib/websocket';
@@ -81,6 +82,7 @@ app.use('/api/v1/activation', activationRoutes);
 app.use('/api/v1/kb', kbRoutes);
 app.use('/api/v1/users', usersRoutes);
 app.use('/api/v1/escalations', escalationsRoutes);
+app.use('/api/v1/failures', failuresRoutes);
 
 app.get('/health', async (_req, res) => {
   try {

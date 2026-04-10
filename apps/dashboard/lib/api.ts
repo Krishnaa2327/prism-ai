@@ -279,6 +279,21 @@ export const api = {
     timeline: (days = 30) => apiFetch<{ timeline: ActivationTimeline[] }>(`/api/v1/activation/timeline?days=${days}`),
     trend: () => apiFetch<ActivationTrend>('/api/v1/activation/trend'),
   },
+
+  failures: {
+    list: () => apiFetch<{
+      failures: Array<{
+        sessionId: string; userId: string; flowName: string;
+        completedSteps: number; totalSteps: number; progressPct: number;
+        lastActiveMinutesAgo: number; type: 'dropped_off';
+      }>;
+      escalations: Array<{
+        ticketId: string; userId: string; flowName: string;
+        reason: string; createdAt: string; status: string;
+      }>;
+      summary: { droppedOff: number; openEscalations: number };
+    }>('/api/v1/failures'),
+  },
 };
 
 // ─── Types ───────────────────────────────────────────────────────────────────

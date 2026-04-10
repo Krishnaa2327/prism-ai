@@ -3,6 +3,7 @@ import { OnboardingStep, Organization } from '@prisma/client';
 
 import { executeApiCall, interpolate } from './apicall';
 import { searchKnowledgeBase } from './knowledge';
+import { logger, withRetry } from '../lib/logger';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -285,16 +286,19 @@ ${org.customInstructions ?? ''}`.trim();
     { role: 'user', content: userMessage },
   ];
 
-  const response = await openai.chat.completions.create({
-    model: 'gpt-4o',
-    max_tokens: 512,
-    tools: AGENT_TOOLS,
-    tool_choice: 'required', // always call a tool — never plain text
-    messages: [
-      { role: 'system', content: systemPrompt },
-      ...messages,
-    ],
-  });
+  const response = await withRetry(
+    () => openai.chat.completions.create({
+      model: 'gpt-4o',
+      max_tokens: 512,
+      tools: AGENT_TOOLS,
+      tool_choice: 'required',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        ...messages,
+      ],
+    }),
+    { retries: 2, delayMs: 800, label: `agent.openai org=${org.id}` }
+  );
 
   const msg = response.choices[0].message;
 
@@ -302,6 +306,7 @@ ${org.customInstructions ?? ''}`.trim();
   if (msg.tool_calls && msg.tool_calls.length > 0) {
     const call = msg.tool_calls[0];
     const name = call.function.name;
+    logger.agentAction(org.id, 'n/a', name, { stepId: step.id, stepTitle: step.title });
     const input = JSON.parse(call.function.arguments) as Record<string, unknown>;
 
     if (name === 'ask_clarification') {
@@ -450,4 +455,32 @@ ${org.customInstructions ?? ''}`.trim();
   // ─── Fallback: plain text response ───────────────────────────────────────
   const content = msg.content ?? "Let me help you with that step.";
   return { type: 'chat', content };
+}
+
+/**
+ * Wraps runAgent with a catch-all fallback.
+ * If the AI fails after all retries, the user sees manual instructions
+ * instead of a broken/empty widget.
+ */
+export async function runAgentSafe(
+  opts: Parameters<typeof runAgent>[0] & { sessionId?: string }
+): Promise<AgentAction> {
+  try {
+    return await runAgent(opts);
+  } catch (err) {
+    logger.agentError(opts.org.id, opts.sessionId ?? 'unknown', err, {
+      stepId: opts.step.id,
+      fallback: true,
+    });
+
+    const manualGuide = opts.step.description
+      ? `Here's how to complete this step manually:\n\n${opts.step.description}`
+      : `I'm having trouble right now. Please try: ${opts.step.title}`;
+
+    return {
+      type: 'ask_clarification',
+      question: manualGuide,
+      options: ['Got it, continue', 'I need more help'],
+    };
+  }
 }

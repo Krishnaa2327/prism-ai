@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { ZodError } from 'zod';
+import { logger } from '../lib/logger';
 
 export function errorHandler(
   err: Error,
@@ -19,7 +20,7 @@ export function errorHandler(
     return;
   }
 
-  console.error(`[ERROR] ${req.method} ${req.path}:`, err.message);
+  logger.httpError(req.method, req.path, 500, err);
 
   res.status(500).json({ error: 'Internal server error' });
 }

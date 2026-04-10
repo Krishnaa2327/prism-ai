@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { authenticateApiKey } from '../middleware/auth';
-import { runAgent } from '../services/agent';
+import { runAgentSafe } from '../services/agent';
 import { detectIntent } from '../services/intent';
 
 import { getUserHistory } from '../services/userhistory';
@@ -94,16 +94,43 @@ router.get('/', async (req: AuthenticatedRequest, res: Response) => {
 });
 
 // ─── POST /api/v1/session/start ───────────────────────────────────────────────
-// Start or resume an onboarding session for a user
+// Start or resume an onboarding session for a user.
+// Pass testMode: true to preview the flow without writing anything to the DB.
 router.post('/start', async (req: AuthenticatedRequest, res: Response) => {
-  const { userId, page, metadata } = req.body as {
+  const { userId, page, metadata, testMode } = req.body as {
     userId: string;
     page?: string;
     metadata?: Record<string, unknown>;
+    testMode?: boolean;
   };
 
   if (!userId) {
     res.status(400).json({ error: 'userId required' });
+    return;
+  }
+
+  // ── Test mode: return a preview session without any DB writes ────────────
+  if (testMode) {
+    const previewFlow = await prisma.onboardingFlow.findFirst({
+      where: { organizationId: req.organization!.id, isActive: true },
+      include: { steps: { orderBy: { order: 'asc' } } },
+    });
+    if (!previewFlow || previewFlow.steps.length === 0) {
+      res.json({ session: null, message: 'No active flow to preview' });
+      return;
+    }
+    res.json({
+      session: {
+        id: 'preview',
+        testMode: true,
+        status: 'active',
+        currentStep: previewFlow.steps[0],
+        completedStepIds: [],
+        totalSteps: previewFlow.steps.length,
+        collectedData: {},
+        flow: previewFlow,
+      },
+    });
     return;
   }
 
@@ -256,14 +283,40 @@ router.post('/start', async (req: AuthenticatedRequest, res: Response) => {
 // The AI agent processes the user's message in the context of the current step
 // and returns an action (ask question, do action, complete step, celebrate)
 router.post('/act', async (req: AuthenticatedRequest, res: Response) => {
-  const { sessionId, userMessage, pageContext } = req.body as {
+  const { sessionId, userMessage, pageContext, testMode } = req.body as {
     sessionId: string;
     userMessage: string;
     pageContext?: import('../services/agent').PageContext;
+    testMode?: boolean;
   };
 
   if (!sessionId || !userMessage) {
     res.status(400).json({ error: 'sessionId and userMessage required' });
+    return;
+  }
+
+  // ── Test mode: run agent against preview session, skip all DB writes ─────
+  if (testMode || sessionId === 'preview') {
+    const previewFlow = await prisma.onboardingFlow.findFirst({
+      where: { organizationId: req.organization!.id, isActive: true },
+      include: { steps: { orderBy: { order: 'asc' } } },
+    });
+    if (!previewFlow || previewFlow.steps.length === 0) {
+      res.status(400).json({ error: 'No active flow' });
+      return;
+    }
+    const step = previewFlow.steps[0];
+    const action = await runAgentSafe({
+      org: req.organization!,
+      step,
+      userMessage,
+      collectedData: {},
+      conversationHistory: [],
+      isLastStep: previewFlow.steps.length === 1,
+      pageContext,
+      sessionId: 'preview',
+    });
+    res.json({ action, testMode: true });
     return;
   }
 
@@ -308,7 +361,7 @@ router.post('/act', async (req: AuthenticatedRequest, res: Response) => {
   const userHistory = await getUserHistory(session.endUserId, session.id).catch(() => null);
 
   // run the agent
-  const action = await runAgent({
+  const action = await runAgentSafe({
     org: req.organization!,
     step: currentStep,
     userMessage,
@@ -317,6 +370,7 @@ router.post('/act', async (req: AuthenticatedRequest, res: Response) => {
     isLastStep,
     pageContext,
     userHistoryFormatted: userHistory?.formatted,
+    sessionId: session.id,
   });
 
   // ─── Handle side effects of the action ───────────────────────────────────

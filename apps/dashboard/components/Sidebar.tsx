@@ -8,6 +8,7 @@ const nav = [
   { href: '/flows',                label: 'Flows',           icon: '◈' },
   { href: '/activation',           label: 'Activation',      icon: '◎' },
   { href: '/users',                label: 'Users',           icon: '◉' },
+  { href: '/failures',             label: 'Failure Inbox',   icon: '◭' },
   { href: '/escalations',          label: 'Escalations',     icon: '◬' },
   { href: '/conversations',        label: 'Conversations',   icon: '◷' },
   { href: '/analytics',            label: 'Analytics',       icon: '◱' },
