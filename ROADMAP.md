@@ -15,6 +15,13 @@
 - ✅ Auth + org API keys
 - ✅ Widget builds + deploys as a single JS file
 - ✅ Backend + dashboard build clean
+- ✅ Stripped 4,800+ lines of non-core features (benchmarks, churn, autooptimize, integrations, etc.)
+- ✅ Dashboard rebranded to Prism (sidebar, widget page CDN URL, snippet builder)
+- ✅ Structured JSON logging + withRetry() utility (Day 4/6)
+- ✅ Fallback mode — AI crash → manual step instructions (Day 7)
+- ✅ Test mode — `testMode: true` runs flow without DB writes (Day 8)
+- ✅ Failure inbox — `/failures` page shows stuck sessions + open escalations (Day 9)
+- ✅ Trigger controls — delay, URL pattern, max-per-user (schema + backend + widget + dashboard UI) (Day 10)
 
 ---
 
@@ -26,8 +33,8 @@
 | 1 | Push to GitHub → Railway → Vercel | Nothing matters until it's live | Backend + dashboard live at real URLs |
 | 2 | Widget on Vercel CDN → end-to-end test | Verify the full loop works on a real browser | `cdn.useprism.ai/widget.js` loads + completes a session |
 | 3 | Register `useprism.ai` → wire domains | Professional URL for outreach | `app.useprism.ai` and `api.useprism.ai` working |
-| 4 | Add structured logging to backend | Right now failures are invisible in Railway logs | Every agent action + error logged as JSON with orgId, sessionId |
-| 5 | Fix empty `dist/` dirs in dashboard (benchmarks, churn, etc.) | Leftover dead routes return 404 correctly | No broken links |
+| ~~4~~ | ~~Add structured logging to backend~~ | ✅ Done | `lib/logger.ts` — JSON logs with orgId, sessionId, withRetry() |
+| ~~5~~ | ~~Fix empty `dist/` dirs in dashboard~~ | ✅ Done | Deleted benchmarks/, churn/, experiments/, optimize/ dirs |
 
 ---
 
@@ -36,11 +43,11 @@
 
 | Day | What | Why | Output |
 |-----|------|-----|--------|
-| 6 | **Retry logic** — if agent tool call fails, retry once before giving up | Right now a single OpenAI timeout kills the session | Agent retries failed tool calls up to 2x |
-| 7 | **Fallback mode** — if AI fails 3x, show manual step instructions | Currently: user sees nothing if agent crashes | Widget shows "Here's how to do this manually: [step description]" |
-| 8 | **Test mode** — `?prism_preview=true` URL param runs flow without saving to DB | Right now operators can't test without polluting their analytics | Preview badge on widget, no data written |
-| 9 | **Failure inbox** — dashboard page showing sessions where AI failed or user dropped | Right now you have no visibility into broken flows | `/failures` page: list of stuck sessions with last action taken |
-| 10 | **Trigger controls** — per-flow config: delay (seconds), page URL match, max shows per user | Right now widget fires on every page load | Flow settings: `triggerDelay`, `urlPattern`, `maxTriggersPerUser` |
+| ~~6~~ | ~~Retry logic~~ | ✅ Done | `runAgentSafe()` wraps OpenAI call with `withRetry(2, 800ms)` |
+| ~~7~~ | ~~Fallback mode~~ | ✅ Done | `runAgentSafe()` falls back to step.description as manual guide |
+| ~~8~~ | ~~Test mode~~ | ✅ Done | `testMode: true` in session/start + session/act — no DB writes |
+| ~~9~~ | ~~Failure inbox~~ | ✅ Done | `/failures` — stuck sessions (inactive >30min) + open escalations |
+| ~~10~~ | ~~Trigger controls~~ | ✅ Done | DB schema + backend PUT + widget enforcement + dashboard UI panel |
 | 11 | **Agent health status** — dashboard widget showing: last 10 sessions, success rate, avg response time | Right now no way to know if AI is working | Health indicator on dashboard home: green/yellow/red |
 | 12 | **Error alerts** — email you when a flow's completion rate drops to 0% for 24h | You'll find out from customers, not before | Resend email to org owner: "Flow X has had 0 completions today" |
 
