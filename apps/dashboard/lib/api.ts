@@ -373,7 +373,7 @@ export interface FollowUpConfig {
   emailBody: string;
 }
 
-export interface OnboardingStep {
+export interface WidgetChecklistStep {
   id: string;
   label: string;
   description: string;
@@ -381,7 +381,7 @@ export interface OnboardingStep {
 }
 
 export interface OnboardingStatus {
-  steps: OnboardingStep[];
+  steps: WidgetChecklistStep[];
   completedCount: number;
   totalCount: number;
   allDone: boolean;

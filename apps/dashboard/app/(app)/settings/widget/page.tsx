@@ -2,6 +2,23 @@
 import { useEffect, useState } from 'react';
 import { api, OrgConfig } from '@/lib/api';
 
+function buildSnippet(apiKey: string): string {
+  const open = String.fromCharCode(60);
+  const close = String.fromCharCode(62);
+  const slash = String.fromCharCode(47);
+  return [
+    `${open}!-- Prism Widget --${close}`,
+    `${open}script src="https://cdn.useprism.ai/widget.js"${close}${open}${slash}script${close}`,
+    `${open}script${close}`,
+    `  Prism('init', {`,
+    `    apiKey: '${apiKey}',`,
+    `    userId: currentUser.id,`,
+    `    metadata: { plan: currentUser.plan },`,
+    `  });`,
+    `${open}${slash}script${close}`,
+  ].join('\n');
+}
+
 export default function WidgetSettingsPage() {
   const [config, setConfig] = useState<OrgConfig | null>(null);
   const [rotating, setRotating] = useState(false);
@@ -28,19 +45,7 @@ export default function WidgetSettingsPage() {
     }
   };
 
-  const snippet = config
-    ? `<!-- OnboardAI Widget -->
-<script src="https://cdn.onboardai.com/widget.js"></script>
-<script>
-  OnboardAI('init', {
-    apiKey: '${config.apiKey}',
-    userId: currentUser.id,       // optional: your user's ID
-    metadata: {
-      plan: currentUser.plan,     // optional: any extra context
-    },
-  });
-</script>`
-    : '';
+  const snippet = config ? buildSnippet(config.apiKey) : '';
 
   return (
     <div className="max-w-2xl">
@@ -135,7 +140,7 @@ export default function WidgetSettingsPage() {
             <tbody className="divide-y divide-slate-50">
               {[
                 { opt: 'apiKey', def: '—', desc: 'Required. Your organization API key.' },
-                { opt: 'userId', def: 'auto', desc: 'Your user's ID. Auto-generated if omitted.' },
+                { opt: 'userId', def: 'auto', desc: "Your user's ID. Auto-generated if omitted." },
                 { opt: 'metadata', def: '{}', desc: 'Extra context passed to the AI (plan, step, etc.)' },
                 { opt: 'idleThreshold', def: '30000', desc: 'Ms of inactivity before triggering (default 30s).' },
                 { opt: 'primaryColor', def: '#6366f1', desc: 'Widget accent color (hex).' },

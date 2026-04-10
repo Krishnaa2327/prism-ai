@@ -1,9 +1,9 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { api, BillingStatus } from '@/lib/api';
 
-export default function BillingPage() {
+function BillingPageInner() {
   const [status, setStatus] = useState<BillingStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -228,5 +228,13 @@ export default function BillingPage() {
         <p className="text-slate-400 text-sm">Failed to load billing information.</p>
       )}
     </div>
+  );
+}
+
+export default function BillingPage() {
+  return (
+    <Suspense>
+      <BillingPageInner />
+    </Suspense>
   );
 }

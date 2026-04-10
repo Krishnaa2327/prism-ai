@@ -33,7 +33,7 @@ export default function ExperimentsPage() {
   useEffect(() => {
     Promise.all([
       api.experiments.list(),
-      api.flows.list(),
+      api.flow.list(),
     ]).then(([e, f]) => {
       setExperiments(e.experiments);
       setFlows(f.flows);
