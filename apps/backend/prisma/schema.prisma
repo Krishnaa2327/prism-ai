@@ -1,0 +1,415 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Organization (your paying customer: a SaaS startup) ───────────────────
+model Organization {
+  id                   String   @id @default(uuid())
+  name                 String
+  apiKey               String   @unique @map("api_key")
+  planType             String   @default("free") @map("plan_type")
+  monthlyMessageLimit  Int      @default(1000) @map("monthly_message_limit")
+  customInstructions   String?  @map("custom_instructions")
+  // Stripe
+  stripeCustomerId     String?  @unique @map("stripe_customer_id")
+  stripeSubscriptionId String?  @unique @map("stripe_subscription_id")
+  stripePriceId        String?  @map("stripe_price_id")
+  subscriptionStatus   String   @default("inactive") @map("subscription_status") // inactive | active | past_due | canceled
+  currentPeriodEnd     DateTime? @map("current_period_end")
+  // Broken-selector alerts
+  selectorAlertEnabled Boolean  @default(false) @map("selector_alert_enabled")
+  selectorAlertWebhook String?  @map("selector_alert_webhook")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  users                 User[]
+  endUsers              EndUser[]
+  conversations         Conversation[]
+  events                Event[]
+  checklistSteps        ChecklistStep[]
+  followUpConfig        FollowUpConfig?
+  onboardingFlows       OnboardingFlow[]
+  onboardingSessions    UserOnboardingSession[]
+  integrationConfigs    IntegrationConfig[]
+  autoOptimizeConfig    AutoOptimizeConfig?
+  optimizationLogs      OptimizationLog[]
+  knowledgeBaseArticles KnowledgeBaseArticle[]
+  selectorHealLogs      SelectorHealLog[]
+  escalationTickets     EscalationTicket[]
+  flowExperiments       FlowExperiment[]
+
+  @@map("organizations")
+}
+
+// ─── User (admin/member of the org who logs into dashboard) ────────────────
+model User {
+  id             String    @id @default(uuid())
+  organizationId String    @map("organization_id")
+  email          String    @unique
+  passwordHash   String    @map("password_hash")
+  name           String?
+  role           String    @default("member") // owner | admin | member
+  createdAt      DateTime  @default(now()) @map("created_at")
+  lastLoginAt    DateTime? @map("last_login_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("users")
+}
+
+// ─── EndUser (the actual user of the customer's SaaS product) ──────────────
+model EndUser {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  externalId     String?  @map("external_id") // customer's own user ID
+  metadata       Json     @default("{}") // plan, page, any custom data
+  firstSeenAt    DateTime @default(now()) @map("first_seen_at")
+  lastSeenAt     DateTime @default(now()) @map("last_seen_at")
+
+  organization       Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  conversations      Conversation[]
+  events             Event[]
+  onboardingSessions UserOnboardingSession[]
+  escalationTickets  EscalationTicket[]
+
+  @@unique([organizationId, externalId])
+  @@index([organizationId])
+  @@map("end_users")
+}
+
+// ─── Conversation ───────────────────────────────────────────────────────────
+model Conversation {
+  id             String    @id @default(uuid())
+  endUserId      String    @map("end_user_id")
+  organizationId String    @map("organization_id")
+  status         String    @default("active") // active | closed
+  triggeredBy    String?   @map("triggered_by") // idle | exit_intent | manual
+  startedAt      DateTime  @default(now()) @map("started_at")
+  endedAt        DateTime? @map("ended_at")
+
+  endUser      EndUser      @relation(fields: [endUserId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  messages     Message[]
+
+  @@index([endUserId])
+  @@index([organizationId])
+  @@map("conversations")
+}
+
+// ─── Message ────────────────────────────────────────────────────────────────
+model Message {
+  id             String   @id @default(uuid())
+  conversationId String   @map("conversation_id")
+  role           String   // user | assistant
+  content        String
+  tokensUsed     Int      @default(0) @map("tokens_used")
+  createdAt      DateTime @default(now()) @map("created_at")
+  metadata       Json     @default("{}")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@index([createdAt(sort: Desc)])
+  @@map("messages")
+}
+
+// ─── ChecklistStep (steps admins define for their end-user onboarding) ────────
+model ChecklistStep {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  label          String                               // "Connect your data source"
+  description    String   @default("")
+  order          Int      @default(0)
+  completionEvent String? @map("completion_event")   // event type that auto-marks done (optional)
+  isRequired     Boolean  @default(true) @map("is_required")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, order])
+  @@map("checklist_steps")
+}
+
+// ─── FollowUpConfig (per-org multi-channel follow-up settings) ────────────────
+model FollowUpConfig {
+  id                  String   @id @default(uuid())
+  organizationId      String   @unique @map("organization_id")
+  emailEnabled        Boolean  @default(false) @map("email_enabled")
+  slackWebhookUrl     String?  @map("slack_webhook_url")
+  whatsappEnabled     Boolean  @default(false) @map("whatsapp_enabled")
+  twilioAccountSid    String?  @map("twilio_account_sid")
+  twilioAuthToken     String?  @map("twilio_auth_token")
+  twilioFromNumber    String?  @map("twilio_from_number")
+  followUpDelayMins   Int      @default(30) @map("follow_up_delay_mins")
+  emailSubject        String   @default("Still need help?") @map("email_subject")
+  emailBody           String   @default("Hi! You were setting things up earlier. Want to pick up where you left off?") @map("email_body")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("follow_up_configs")
+}
+
+// ─── OnboardingFlow (the journey to first value — defined by the SaaS owner) ─
+model OnboardingFlow {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  name           String
+  description    String   @default("")
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization       Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  steps              OnboardingStep[]
+  sessions           UserOnboardingSession[]
+  controlExperiments FlowExperiment[]       @relation("ExperimentControl")
+  variantExperiments FlowExperiment[]       @relation("ExperimentVariant")
+
+  @@index([organizationId])
+  @@map("onboarding_flows")
+}
+
+// ─── FlowExperiment (A/B test: compare two flow variants) ───────────────────
+model FlowExperiment {
+  id             String    @id @default(uuid())
+  organizationId String    @map("organization_id")
+  name           String
+  status         String    @default("running") // running | paused | concluded
+  controlFlowId  String    @map("control_flow_id")
+  variantFlowId  String    @map("variant_flow_id")
+  trafficSplit   Int       @default(50) @map("traffic_split") // % routed to variant (0-100)
+  winnerId       String?   @map("winner_id")    // flow id of declared winner
+  startedAt      DateTime  @default(now()) @map("started_at")
+  concludedAt    DateTime? @map("concluded_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  controlFlow  OnboardingFlow @relation("ExperimentControl", fields: [controlFlowId], references: [id], onDelete: Cascade)
+  variantFlow  OnboardingFlow @relation("ExperimentVariant", fields: [variantFlowId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("flow_experiments")
+}
+
+// ─── OnboardingStep (one step in the journey, with AI config + action) ───────
+model OnboardingStep {
+  id              String   @id @default(uuid())
+  flowId          String   @map("flow_id")
+  order           Int
+  title           String   // "Connect your data source"
+  intent          String   @default("") // "data_connection" — user goal keyword
+  description     String   @default("")
+  aiPrompt        String   @default("") @map("ai_prompt")     // extra instructions for AI on this step
+  smartQuestions  Json     @default("[]") @map("smart_questions") // up to 2 questions to ask
+  actionType      String?  @map("action_type") // fill_form | click | navigate | api_call | none
+  actionConfig    Json     @default("{}") @map("action_config")   // {selector, url, fields, ...}
+  completionEvent String?  @map("completion_event") // event that auto-marks step done
+  isMilestone     Boolean  @default(false) @map("is_milestone") // this step = "aha moment"
+  targetUrl       String?  @map("target_url") // optional page this step should run on (e.g. "/settings" or "https://external.com")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  flow             OnboardingFlow     @relation(fields: [flowId], references: [id], onDelete: Cascade)
+  progress         UserStepProgress[]
+  optimizationLogs OptimizationLog[]
+
+  @@index([flowId, order])
+  @@map("onboarding_steps")
+}
+
+// ─── UserOnboardingSession (tracks one user's journey through a flow) ─────────
+model UserOnboardingSession {
+  id             String    @id @default(uuid())
+  endUserId      String    @map("end_user_id")
+  organizationId String    @map("organization_id")
+  flowId         String    @map("flow_id")
+  currentStepId  String?   @map("current_step_id")
+  status         String    @default("active") // active | completed | abandoned
+  firstValueAt   DateTime? @map("first_value_at") // when aha moment was reached
+  startedAt      DateTime  @default(now()) @map("started_at")
+  completedAt    DateTime? @map("completed_at")
+  lastActiveAt   DateTime  @default(now()) @map("last_active_at")
+  collectedData  Json      @default("{}") @map("collected_data") // answers to smart questions
+
+  // A/B experiment tracking — null for sessions not part of an experiment
+  experimentId      String? @map("experiment_id")
+  experimentVariant String? @map("experiment_variant") // "control" | "variant"
+
+  endUser      EndUser               @relation(fields: [endUserId], references: [id], onDelete: Cascade)
+  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  flow         OnboardingFlow        @relation(fields: [flowId], references: [id], onDelete: Cascade)
+  stepProgress UserStepProgress[]
+
+  @@unique([endUserId, flowId])
+  @@index([organizationId])
+  @@index([flowId])
+  @@index([experimentId])
+  @@map("user_onboarding_sessions")
+}
+
+// ─── UserStepProgress (per-step completion tracking + intelligence pipeline) ───
+model UserStepProgress {
+  id          String    @id @default(uuid())
+  sessionId   String    @map("session_id")
+  stepId      String    @map("step_id")
+  status      String    @default("not_started") // not_started | in_progress | completed | skipped
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+  timeSpentMs Int       @default(0) @map("time_spent_ms")
+  attempts    Int       @default(0)
+  aiAssisted  Boolean   @default(false) @map("ai_assisted")
+  // ── Intelligence pipeline fields (feed Phase 3 prompt optimization) ──────────
+  promptSnapshot  String?  @map("prompt_snapshot")   // exact AI prompt used at completion time
+  messagesCount   Int      @default(0) @map("messages_count") // turns it took to complete
+  dropReason      String?  @map("drop_reason")       // "idle" | "exit" | "explicit_skip" | null
+  outcome         String?  // "completed" | "dropped" | "skipped" — redundant with status but fast to query
+
+  session UserOnboardingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  step    OnboardingStep        @relation(fields: [stepId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, stepId])
+  @@index([stepId])
+  @@map("user_step_progress")
+}
+
+// ─── AutoOptimizeConfig (per-org auto-improvement settings) ───────────────────
+model AutoOptimizeConfig {
+  id              String   @id @default(uuid())
+  organizationId  String   @unique @map("organization_id")
+  enabled         Boolean  @default(false)
+  threshold       Int      @default(50)  // optimize when completion rate < this %
+  minSessions     Int      @default(10)  @map("min_sessions") // min data before triggering
+  lastRunAt       DateTime? @map("last_run_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("auto_optimize_configs")
+}
+
+// ─── OptimizationLog (history of auto + manual prompt optimizations) ──────────
+model OptimizationLog {
+  id                   String   @id @default(uuid())
+  organizationId       String   @map("organization_id")
+  stepId               String   @map("step_id")
+  flowId               String   @map("flow_id")
+  triggeredBy          String   @map("triggered_by") // "auto" | "manual"
+  previousPrompt       String?  @map("previous_prompt")
+  newPrompt            String   @map("new_prompt")
+  completionRateBefore Float?   @map("completion_rate_before")
+  reason               String   @default("")
+  appliedAt            DateTime @default(now()) @map("applied_at")
+
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  step         OnboardingStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, appliedAt(sort: Desc)])
+  @@map("optimization_logs")
+}
+
+// ─── IntegrationConfig (per-org outbound integrations) ────────────────────────
+model IntegrationConfig {
+  id             String    @id @default(uuid())
+  organizationId String    @map("organization_id")
+  type           String    // segment | mixpanel | hubspot | webhook
+  enabled        Boolean   @default(true)
+  credentials    Json      @default("{}") // {writeKey, token, apiKey, url}
+  settings       Json      @default("{}") // {trackEvents, contactEmailField}
+  lastFiredAt    DateTime? @map("last_fired_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, type])
+  @@map("integration_configs")
+}
+
+// ─── Event (user behavior tracking) ─────────────────────────────────────────
+model Event {
+  id             String   @id @default(uuid())
+  endUserId      String   @map("end_user_id")
+  organizationId String   @map("organization_id")
+  eventType      String   @map("event_type") // page_view | idle | exit_intent | click
+  properties     Json     @default("{}")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  endUser      EndUser      @relation(fields: [endUserId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([endUserId])
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@index([eventType])
+  @@map("events")
+}
+
+// ─── EscalationTicket (human handoff request from the AI agent) ──────────────
+model EscalationTicket {
+  id             String    @id @default(uuid())
+  organizationId String    @map("organization_id")
+  endUserId      String    @map("end_user_id")
+  sessionId      String    @map("session_id")
+  stepId         String?   @map("step_id")
+  trigger        String    // "agent_detected" | "user_requested"
+  status         String    @default("open") // open | in_progress | resolved
+  reason         String    // why escalation was triggered
+  agentMessage   String    @map("agent_message") // message shown to user
+  context        Json      @default("{}") @map("context") // conversation, collected data, user info
+  notes          String?   // support team notes
+  resolvedAt     DateTime? @map("resolved_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  endUser      EndUser      @relation(fields: [endUserId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, status])
+  @@index([endUserId])
+  @@map("escalation_tickets")
+}
+
+// ─── SelectorHealLog (self-healing resolver telemetry) ───────────────────────
+model SelectorHealLog {
+  id                String   @id @default(uuid())
+  organizationId    String   @map("organization_id")
+  sessionId         String?  @map("session_id")
+  stepId            String?  @map("step_id")
+  originalSelector  String   @map("original_selector")
+  usedSelector      String?  @map("used_selector")   // null when strategy = 'failed'
+  strategy          String                            // primary|data-testid|name|aria-label|placeholder|exact-text|fuzzy-class|fuzzy-text|failed
+  actionType        String?  @map("action_type")      // click|fill_form|highlight
+  page              String
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, originalSelector])
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@index([stepId])
+  @@map("selector_heal_logs")
+}
+
+// ─── KnowledgeBaseArticle (org-specific docs the AI searches during onboarding) ─
+model KnowledgeBaseArticle {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  title          String
+  content        String   // plain text or markdown
+  tags           String[] @default([])
+  embedding      Json     @default("[]") @map("embedding") // float[] from text-embedding-3-small
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("knowledge_base_articles")
+}

@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OnboardAI Copilot Demo — Analytics SaaS</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, sans-serif; background: #f8fafc; color: #1e293b; }
+
+    .nav {
+      background: white; padding: 14px 32px;
+      border-bottom: 1px solid #e2e8f0;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .nav-logo { font-weight: 700; font-size: 18px; color: #6366f1; }
+    .nav-steps { display: flex; gap: 0; }
+    .nav-step {
+      font-size: 12px; font-weight: 600; padding: 6px 16px;
+      border: 1px solid #e2e8f0; color: #94a3b8; background: white;
+      cursor: default;
+    }
+    .nav-step:first-child { border-radius: 6px 0 0 6px; }
+    .nav-step:last-child  { border-radius: 0 6px 6px 0; }
+    .nav-step.active { background: #6366f1; color: white; border-color: #6366f1; }
+    .nav-step.done   { background: #f0fdf4; color: #16a34a; border-color: #bbf7d0; }
+
+    .container { max-width: 600px; margin: 48px auto; padding: 0 24px; }
+
+    /* ── Page sections — shown one at a time ─────────────────────────── */
+    .page-section { display: none; }
+    .page-section.active { display: block; }
+
+    h1 { font-size: 24px; font-weight: 700; margin-bottom: 6px; }
+    .subtitle { color: #64748b; margin-bottom: 32px; font-size: 15px; }
+
+    .card {
+      background: white; border: 1.5px solid #e2e8f0;
+      border-radius: 14px; padding: 28px;
+    }
+
+    .form-group { margin-bottom: 20px; }
+    label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: #374151; }
+    input, select, textarea {
+      width: 100%; padding: 10px 14px;
+      border: 1.5px solid #e2e8f0; border-radius: 8px;
+      font-size: 14px; color: #1e293b; background: white;
+      transition: border-color 0.15s;
+    }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: #6366f1; }
+
+    .btn {
+      padding: 11px 24px;
+      background: #6366f1; color: white;
+      border: none; border-radius: 8px;
+      font-size: 14px; font-weight: 600;
+      cursor: pointer; transition: background 0.15s;
+    }
+    .btn:hover { background: #4f46e5; }
+    .btn-outline {
+      padding: 11px 24px;
+      background: white; color: #6366f1;
+      border: 1.5px solid #6366f1; border-radius: 8px;
+      font-size: 14px; font-weight: 600;
+      cursor: pointer; margin-left: 10px;
+    }
+
+    .source-grid {
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 12px; margin-bottom: 24px;
+    }
+    .source-card {
+      border: 1.5px solid #e2e8f0; border-radius: 10px;
+      padding: 16px; cursor: pointer; transition: all 0.15s;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .source-card:hover { border-color: #6366f1; background: #f5f3ff; }
+    .source-card.selected { border-color: #6366f1; background: #f5f3ff; }
+    .source-icon { font-size: 24px; }
+    .source-label { font-size: 13px; font-weight: 600; }
+
+    /* Step 2 — dashboard builder */
+    .metric-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+    .chip {
+      padding: 6px 14px; border-radius: 999px;
+      border: 1.5px solid #e2e8f0; font-size: 13px;
+      cursor: pointer; background: white;
+      transition: all 0.15s;
+    }
+    .chip:hover, .chip.selected { background: #6366f1; color: white; border-color: #6366f1; }
+
+    /* Step 3 — insight */
+    .insight-card {
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      color: white; border-radius: 14px; padding: 32px;
+      text-align: center; margin-bottom: 24px;
+    }
+    .insight-number { font-size: 52px; font-weight: 800; line-height: 1; }
+    .insight-label { font-size: 14px; opacity: 0.85; margin-top: 6px; }
+    .stat-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+    .stat-box {
+      background: white; border: 1.5px solid #e2e8f0;
+      border-radius: 10px; padding: 16px; text-align: center;
+    }
+    .stat-num { font-size: 24px; font-weight: 700; color: #6366f1; }
+    .stat-lbl { font-size: 11px; color: #94a3b8; margin-top: 2px; }
+
+    .hint {
+      margin-top: 32px; padding: 14px 16px;
+      background: #fef9c3; border-radius: 10px;
+      font-size: 12px; color: #713f12; line-height: 1.6;
+      border: 1px solid #fde68a;
+    }
+    .hint strong { display: block; margin-bottom: 3px; font-size: 13px; }
+  </style>
+</head>
+<body>
+
+  <nav class="nav">
+    <span class="nav-logo">DataPulse</span>
+    <div class="nav-steps">
+      <span class="nav-step active" id="nav-1">1. Connect data</span>
+      <span class="nav-step" id="nav-2">2. Build dashboard</span>
+      <span class="nav-step" id="nav-3">3. First insight</span>
+    </div>
+  </nav>
+
+  <div class="container">
+
+    <!-- ── Step 1: Connect data source ──────────────────────────────────── -->
+    <div class="page-section active" id="section-1">
+      <h1>Connect your data source</h1>
+      <p class="subtitle">Pick where your data lives — we'll do the rest.</p>
+
+      <div class="card">
+        <div class="source-grid">
+          <div class="source-card" onclick="selectSource(this, 'Google Analytics')">
+            <span class="source-icon">📊</span>
+            <span class="source-label">Google Analytics</span>
+          </div>
+          <div class="source-card" onclick="selectSource(this, 'Mixpanel')">
+            <span class="source-icon">🔮</span>
+            <span class="source-label">Mixpanel</span>
+          </div>
+          <div class="source-card" id="data-source-upload" onclick="selectSource(this, 'CSV Upload')">
+            <span class="source-icon">📁</span>
+            <span class="source-label">CSV Upload</span>
+          </div>
+          <div class="source-card" onclick="selectSource(this, 'Custom API')">
+            <span class="source-icon">⚙️</span>
+            <span class="source-label">Custom API</span>
+          </div>
+        </div>
+
+        <button class="btn" onclick="connectData()">Connect →</button>
+      </div>
+
+      <div class="hint">
+        <strong>🧪 Copilot demo instructions</strong>
+        The AI copilot opens automatically in 2 seconds.<br>
+        Try typing: <em>"I want to use CSV"</em> — the AI will highlight the CSV card and complete the step.<br>
+        Or just click a source and hit Connect yourself.
+      </div>
+    </div>
+
+    <!-- ── Step 2: Build dashboard ───────────────────────────────────────── -->
+    <div class="page-section" id="section-2">
+      <h1>Create your first dashboard</h1>
+      <p class="subtitle">What do you want to track? We'll build the chart automatically.</p>
+
+      <div class="card">
+        <div class="form-group">
+          <label>Dashboard name</label>
+          <input id="dashboard-name" type="text" placeholder="e.g. Signup Funnel" />
+        </div>
+
+        <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:10px;">
+          Quick pick a metric:
+        </label>
+        <div class="metric-chips">
+          <span class="chip" onclick="pickMetric(this, 'Signups')">Signups</span>
+          <span class="chip" onclick="pickMetric(this, 'Revenue')">Revenue</span>
+          <span class="chip" onclick="pickMetric(this, 'Churn')">Churn</span>
+          <span class="chip" onclick="pickMetric(this, 'Page views')">Page views</span>
+          <span class="chip" onclick="pickMetric(this, 'Active users')">Active users</span>
+          <span class="chip" onclick="pickMetric(this, 'Conversion rate')">Conversion rate</span>
+        </div>
+
+        <button class="btn" onclick="createDashboard()">Build Dashboard →</button>
+      </div>
+    </div>
+
+    <!-- ── Step 3: First insight ─────────────────────────────────────────── -->
+    <div class="page-section" id="section-3">
+      <h1>Your first insight is live 🎉</h1>
+      <p class="subtitle">Here's what your data is telling you right now.</p>
+
+      <div class="insight-card">
+        <div class="insight-number" id="insight-number">1,284</div>
+        <div class="insight-label" id="insight-label">Signups this month</div>
+      </div>
+
+      <div class="stat-row">
+        <div class="stat-box">
+          <div class="stat-num">+18%</div>
+          <div class="stat-lbl">vs last month</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-num">3.2%</div>
+          <div class="stat-lbl">Conversion rate</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-num">Day 2</div>
+          <div class="stat-lbl">Peak activity</div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /container -->
+
+
+  <!-- ── Page navigation logic ──────────────────────────────────────────── -->
+  <script>
+    var currentSection = 1;
+    var selectedSource = null;
+    var selectedMetric = null;
+
+    function selectSource(el, name) {
+      document.querySelectorAll('.source-card').forEach(function(c) { c.classList.remove('selected'); });
+      el.classList.add('selected');
+      selectedSource = name;
+    }
+
+    function pickMetric(el, name) {
+      document.querySelectorAll('.chip').forEach(function(c) { c.classList.remove('selected'); });
+      el.classList.add('selected');
+      selectedMetric = name;
+      document.getElementById('dashboard-name').value = name + ' Dashboard';
+    }
+
+    function connectData() {
+      if (!selectedSource) { alert('Pick a data source first.'); return; }
+      goToSection(2);
+      // fire the completion event so the copilot session advances automatically
+      if (window.__copilot) window.__copilot.fireEvent('data_connected');
+    }
+
+    function createDashboard() {
+      var name = document.getElementById('dashboard-name').value.trim();
+      if (!name) { alert('Give your dashboard a name.'); return; }
+      selectedMetric = name;
+      document.getElementById('insight-label').textContent = name + ' this month';
+      goToSection(3);
+      if (window.__copilot) window.__copilot.fireEvent('dashboard_created');
+      setTimeout(function() {
+        if (window.__copilot) window.__copilot.fireEvent('insight_viewed');
+      }, 1500);
+    }
+
+    function goToSection(n) {
+      document.querySelectorAll('.page-section').forEach(function(s) { s.classList.remove('active'); });
+      document.getElementById('section-' + n).classList.add('active');
+      document.querySelectorAll('.nav-step').forEach(function(s, i) {
+        s.classList.remove('active', 'done');
+        if (i + 1 < n) s.classList.add('done');
+        if (i + 1 === n) s.classList.add('active');
+      });
+      currentSection = n;
+    }
+  </script>
+
+
+  <!-- ── OnboardAI Widget ────────────────────────────────────────────────── -->
+  <!--
+    Dev: loads directly from Vite.
+    Production: replace with <script src="https://cdn.yourdomain.com/widget.js"></script>
+  -->
+  <script type="module">
+    import { OnboardAIWidget } from '/src/widget.ts';
+
+    // ── Paste API key from seed output ────────────────────────────────────
+    const API_KEY = 'org_c6816bf636ae147eda98717e86a52a008424317cd07ca857c7363e73eafc0e24';
+
+    const widget = new OnboardAIWidget({
+      apiKey: API_KEY,
+      apiUrl: 'http://localhost:4000',
+      userId: 'demo_' + (localStorage.getItem('__demo_uid') || (() => { const id = Math.random().toString(36).slice(2,10); localStorage.setItem('__demo_uid', id); return id; })()),
+      metadata: { plan: 'trial', product: 'analytics-saas' },
+      primaryColor: '#6366f1',
+      position: 'bottom-right',
+      idleThreshold: 30000,
+      triggerDelay: 2000,
+    });
+
+    widget.init();
+
+    // expose copilot for the page nav buttons above
+    setTimeout(function() {
+      window.__copilot = widget.getCopilot();
+    }, 3000);
+  </script>
+
+</body>
+</html>

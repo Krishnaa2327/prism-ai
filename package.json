@@ -1,0 +1,20 @@
+{
+  "name": "onboardai",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev --workspace=apps/backend\" \"npm run dev --workspace=apps/dashboard\" \"npm run dev --workspace=apps/landing\"",
+    "dev:backend": "npm run dev --workspace=apps/backend",
+    "dev:dashboard": "npm run dev --workspace=apps/dashboard",
+    "dev:landing": "npm run dev --workspace=apps/landing",
+    "build": "npm run build --workspaces",
+    "test": "npm run test --workspaces"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.0"
+  }
+}

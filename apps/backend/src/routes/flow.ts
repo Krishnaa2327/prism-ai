@@ -1,0 +1,210 @@
+import { Router, Response } from 'express';
+import { prisma } from '../lib/prisma';
+import { authenticateJWT } from '../middleware/auth';
+import { AuthenticatedRequest } from '../types';
+import { FLOW_TEMPLATES } from '../lib/templates';
+
+const router = Router();
+router.use(authenticateJWT);
+
+// ─── GET /api/v1/flow/templates — list built-in vertical templates ────────────
+router.get('/templates', (_req, res) => {
+  // Strip step details to keep response small — dashboard only needs metadata for the picker
+  const list = FLOW_TEMPLATES.map(({ steps, ...meta }) => ({
+    ...meta,
+    stepCount: steps.length,
+  }));
+  res.json({ templates: list });
+});
+
+// ─── POST /api/v1/flow/from-template — create a flow from a template ──────────
+router.post('/from-template', async (req: AuthenticatedRequest, res: Response) => {
+  const { templateId } = req.body as { templateId: string };
+  const template = FLOW_TEMPLATES.find((t) => t.id === templateId);
+  if (!template) {
+    res.status(404).json({ error: 'Template not found' });
+    return;
+  }
+
+  const orgId = req.user!.organizationId;
+
+  const flow = await prisma.onboardingFlow.create({
+    data: {
+      organizationId: orgId,
+      name: template.name,
+      description: template.description,
+      isActive: true,
+      steps: {
+        create: template.steps.map((s) => ({
+          order: s.order,
+          title: s.title,
+          intent: s.intent,
+          description: s.description,
+          aiPrompt: s.aiPrompt,
+          smartQuestions: s.smartQuestions,
+          actionType: s.actionType,
+          actionConfig: s.actionConfig,
+          completionEvent: s.completionEvent,
+          isMilestone: s.isMilestone,
+        })),
+      },
+    },
+    include: { steps: { orderBy: { order: 'asc' } } },
+  });
+
+  res.status(201).json({ flow });
+});
+
+// ─── GET /api/v1/flow — list all flows for the org ───────────────────────────
+router.get('/', async (req: AuthenticatedRequest, res: Response) => {
+  const flows = await prisma.onboardingFlow.findMany({
+    where: { organizationId: req.user!.organizationId },
+    include: { steps: { orderBy: { order: 'asc' } } },
+    orderBy: { createdAt: 'asc' },
+  });
+  res.json({ flows });
+});
+
+// ─── GET /api/v1/flow/:id — single flow with steps ───────────────────────────
+router.get('/:id', async (req: AuthenticatedRequest, res: Response) => {
+  const flow = await prisma.onboardingFlow.findFirstOrThrow({
+    where: { id: req.params.id, organizationId: req.user!.organizationId },
+    include: { steps: { orderBy: { order: 'asc' } } },
+  });
+  res.json({ flow });
+});
+
+// ─── POST /api/v1/flow — create flow ─────────────────────────────────────────
+router.post('/', async (req: AuthenticatedRequest, res: Response) => {
+  const { name, description } = req.body as { name: string; description?: string };
+  const flow = await prisma.onboardingFlow.create({
+    data: { organizationId: req.user!.organizationId, name, description: description ?? '' },
+    include: { steps: true },
+  });
+  res.status(201).json({ flow });
+});
+
+// ─── PUT /api/v1/flow/:id — update flow ──────────────────────────────────────
+router.put('/:id', async (req: AuthenticatedRequest, res: Response) => {
+  const { name, description, isActive } = req.body as {
+    name?: string;
+    description?: string;
+    isActive?: boolean;
+  };
+  const flow = await prisma.onboardingFlow.updateMany({
+    where: { id: req.params.id, organizationId: req.user!.organizationId },
+    data: {
+      ...(name !== undefined && { name }),
+      ...(description !== undefined && { description }),
+      ...(isActive !== undefined && { isActive }),
+    },
+  });
+  res.json({ updated: flow.count > 0 });
+});
+
+// ─── DELETE /api/v1/flow/:id ──────────────────────────────────────────────────
+router.delete('/:id', async (req: AuthenticatedRequest, res: Response) => {
+  await prisma.onboardingFlow.deleteMany({
+    where: { id: req.params.id, organizationId: req.user!.organizationId },
+  });
+  res.json({ deleted: true });
+});
+
+// ─── POST /api/v1/flow/:id/steps — add step ──────────────────────────────────
+router.post('/:id/steps', async (req: AuthenticatedRequest, res: Response) => {
+  // verify flow belongs to org
+  const flow = await prisma.onboardingFlow.findFirstOrThrow({
+    where: { id: req.params.id, organizationId: req.user!.organizationId },
+    include: { steps: { select: { order: true } } },
+  });
+
+  const maxOrder = flow.steps.length > 0 ? Math.max(...flow.steps.map((s) => s.order)) : -1;
+
+  const {
+    title,
+    intent,
+    description,
+    aiPrompt,
+    smartQuestions,
+    actionType,
+    actionConfig,
+    completionEvent,
+    isMilestone,
+  } = req.body as {
+    title: string;
+    intent?: string;
+    description?: string;
+    aiPrompt?: string;
+    smartQuestions?: string[];
+    actionType?: string;
+    actionConfig?: Record<string, unknown>;
+    completionEvent?: string;
+    isMilestone?: boolean;
+  };
+
+  const step = await prisma.onboardingStep.create({
+    data: {
+      flowId: req.params.id,
+      order: maxOrder + 1,
+      title,
+      intent: intent ?? '',
+      description: description ?? '',
+      aiPrompt: aiPrompt ?? '',
+      smartQuestions: smartQuestions ?? [],
+      actionType: actionType ?? null,
+      actionConfig: actionConfig ?? {},
+      completionEvent: completionEvent ?? null,
+      isMilestone: isMilestone ?? false,
+    },
+  });
+  res.status(201).json({ step });
+});
+
+// ─── PUT /api/v1/flow/:id/steps/:stepId — update step ────────────────────────
+router.put('/:id/steps/:stepId', async (req: AuthenticatedRequest, res: Response) => {
+  // verify ownership
+  await prisma.onboardingFlow.findFirstOrThrow({
+    where: { id: req.params.id, organizationId: req.user!.organizationId },
+  });
+
+  const {
+    title,
+    intent,
+    description,
+    aiPrompt,
+    smartQuestions,
+    actionType,
+    actionConfig,
+    completionEvent,
+    isMilestone,
+    order,
+  } = req.body as Record<string, unknown>;
+
+  const step = await prisma.onboardingStep.update({
+    where: { id: req.params.stepId },
+    data: {
+      ...(title !== undefined && { title: title as string }),
+      ...(intent !== undefined && { intent: intent as string }),
+      ...(description !== undefined && { description: description as string }),
+      ...(aiPrompt !== undefined && { aiPrompt: aiPrompt as string }),
+      ...(smartQuestions !== undefined && { smartQuestions }),
+      ...(actionType !== undefined && { actionType: actionType as string | null }),
+      ...(actionConfig !== undefined && { actionConfig }),
+      ...(completionEvent !== undefined && { completionEvent: completionEvent as string | null }),
+      ...(isMilestone !== undefined && { isMilestone: isMilestone as boolean }),
+      ...(order !== undefined && { order: order as number }),
+    },
+  });
+  res.json({ step });
+});
+
+// ─── DELETE /api/v1/flow/:id/steps/:stepId ────────────────────────────────────
+router.delete('/:id/steps/:stepId', async (req: AuthenticatedRequest, res: Response) => {
+  await prisma.onboardingFlow.findFirstOrThrow({
+    where: { id: req.params.id, organizationId: req.user!.organizationId },
+  });
+  await prisma.onboardingStep.delete({ where: { id: req.params.stepId } });
+  res.json({ deleted: true });
+});
+
+export default router;
