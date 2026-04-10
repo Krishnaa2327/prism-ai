@@ -16,6 +16,12 @@ export interface CopilotStep {
   targetUrl?: string | null;
 }
 
+export interface TriggerConfig {
+  delayMs: number;        // ms after page load before widget fires (default 30000)
+  urlPattern: string;     // comma-separated patterns, empty = all pages
+  maxTriggersPerUser: number; // 0 = unlimited
+}
+
 export interface CopilotSession {
   id: string;
   status: string;
@@ -25,6 +31,17 @@ export interface CopilotSession {
   collectedData: Record<string, unknown>;
   flow: { id: string; name: string; steps: CopilotStep[] };
   isReturning?: boolean;
+}
+
+/** Returns true if the current page URL matches any of the comma-separated patterns */
+export function matchesUrlPattern(pattern: string, url: string = window.location.pathname): boolean {
+  if (!pattern || pattern.trim() === '') return true; // empty = match all
+  return pattern.split(',').map((p) => p.trim()).some((p) => {
+    if (!p) return false;
+    // Convert simple glob (*) to regex
+    const regex = new RegExp('^' + p.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
+    return regex.test(url);
+  });
 }
 
 export type AgentAction =
@@ -41,6 +58,7 @@ export class CopilotManager {
   private apiUrl: string;
   private userId: string | null = null;
   private session: CopilotSession | null = null;
+  private triggerConfig: TriggerConfig = { delayMs: 30000, urlPattern: '', maxTriggersPerUser: 0 };
   private onActionCallbacks: Array<(action: AgentAction) => void> = [];
   private onSessionUpdateCallbacks: Array<(session: CopilotSession) => void> = [];
 
@@ -131,6 +149,15 @@ export class CopilotManager {
     return this.session;
   }
 
+  getTriggerConfig(): TriggerConfig {
+    return this.triggerConfig;
+  }
+
+  /** Returns true if the current page should trigger this flow */
+  shouldTriggerOnCurrentPage(): boolean {
+    return matchesUrlPattern(this.triggerConfig.urlPattern);
+  }
+
   getProgress(): { completed: number; total: number; percent: number } {
     if (!this.session) return { completed: 0, total: 0, percent: 0 };
     const completed = this.session.completedStepIds.length;
@@ -156,6 +183,9 @@ export class CopilotManager {
         body: JSON.stringify({ userId, page, metadata }),
       });
       const data = await res.json();
+      if (data.trigger) {
+        this.triggerConfig = data.trigger as TriggerConfig;
+      }
       if (data.session) {
         const fresh: CopilotSession = { ...data.session, isReturning: data.isReturning ?? false };
         this.session = fresh;

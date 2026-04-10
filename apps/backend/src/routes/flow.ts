@@ -87,10 +87,13 @@ router.post('/', async (req: AuthenticatedRequest, res: Response) => {
 
 // ─── PUT /api/v1/flow/:id — update flow ──────────────────────────────────────
 router.put('/:id', async (req: AuthenticatedRequest, res: Response) => {
-  const { name, description, isActive } = req.body as {
+  const { name, description, isActive, triggerDelayMs, urlPattern, maxTriggersPerUser } = req.body as {
     name?: string;
     description?: string;
     isActive?: boolean;
+    triggerDelayMs?: number;
+    urlPattern?: string;
+    maxTriggersPerUser?: number;
   };
   const flow = await prisma.onboardingFlow.updateMany({
     where: { id: req.params.id, organizationId: req.user!.organizationId },
@@ -98,6 +101,9 @@ router.put('/:id', async (req: AuthenticatedRequest, res: Response) => {
       ...(name !== undefined && { name }),
       ...(description !== undefined && { description }),
       ...(isActive !== undefined && { isActive }),
+      ...(triggerDelayMs !== undefined && { triggerDelayMs }),
+      ...(urlPattern !== undefined && { urlPattern }),
+      ...(maxTriggersPerUser !== undefined && { maxTriggersPerUser }),
     },
   });
   res.json({ updated: flow.count > 0 });

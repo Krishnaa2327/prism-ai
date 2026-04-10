@@ -28,13 +28,35 @@ export default function FlowEditorPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
+  // Trigger config state
+  const [triggerDelaySec, setTriggerDelaySec] = useState(30);
+  const [urlPattern, setUrlPattern] = useState('');
+  const [maxTriggers, setMaxTriggers] = useState(0);
+  const [savingTrigger, setSavingTrigger] = useState(false);
+  const [triggerSaved, setTriggerSaved] = useState(false);
+
   useEffect(() => {
     api.flow.get(id).then((d) => {
       setFlow(d.flow);
       setSteps(d.flow.steps ?? []);
+      setTriggerDelaySec(Math.round((d.flow.triggerDelayMs ?? 30000) / 1000));
+      setUrlPattern(d.flow.urlPattern ?? '');
+      setMaxTriggers(d.flow.maxTriggersPerUser ?? 0);
       setLoading(false);
     });
   }, [id]);
+
+  async function saveTriggerConfig() {
+    setSavingTrigger(true);
+    await api.flow.update(id, {
+      triggerDelayMs: triggerDelaySec * 1000,
+      urlPattern,
+      maxTriggersPerUser: maxTriggers,
+    });
+    setSavingTrigger(false);
+    setTriggerSaved(true);
+    setTimeout(() => setTriggerSaved(false), 2000);
+  }
 
   async function addStep() {
     if (!newStep.title.trim()) return;
@@ -73,6 +95,63 @@ export default function FlowEditorPage() {
       <p className="text-slate-500 text-sm mb-8">
         Define each step of the journey. The AI copilot will guide users through these steps automatically.
       </p>
+
+      {/* Trigger settings */}
+      <div className="border border-slate-200 rounded-xl p-6 mb-8 bg-white">
+        <h2 className="font-semibold text-slate-800 mb-1">Trigger Settings</h2>
+        <p className="text-xs text-slate-400 mb-5">Control when and how often the widget appears to users.</p>
+        <div className="grid grid-cols-3 gap-5">
+          <div>
+            <label className="text-xs font-medium text-slate-500 block mb-1">
+              Delay after page load (seconds)
+            </label>
+            <input
+              type="number"
+              min={0}
+              value={triggerDelaySec}
+              onChange={(e) => setTriggerDelaySec(Math.max(0, Number(e.target.value)))}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+            />
+            <p className="text-xs text-slate-400 mt-1">0 = appear immediately</p>
+          </div>
+          <div>
+            <label className="text-xs font-medium text-slate-500 block mb-1">
+              URL pattern (comma-separated)
+            </label>
+            <input
+              type="text"
+              value={urlPattern}
+              onChange={(e) => setUrlPattern(e.target.value)}
+              placeholder="/dashboard, /onboarding/*"
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+            />
+            <p className="text-xs text-slate-400 mt-1">Empty = all pages. Use * as wildcard.</p>
+          </div>
+          <div>
+            <label className="text-xs font-medium text-slate-500 block mb-1">
+              Max triggers per user
+            </label>
+            <input
+              type="number"
+              min={0}
+              value={maxTriggers}
+              onChange={(e) => setMaxTriggers(Math.max(0, Number(e.target.value)))}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+            />
+            <p className="text-xs text-slate-400 mt-1">0 = unlimited</p>
+          </div>
+        </div>
+        <div className="mt-4 flex items-center gap-3">
+          <button
+            onClick={saveTriggerConfig}
+            disabled={savingTrigger}
+            className="bg-brand-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-brand-700 disabled:opacity-50"
+          >
+            {savingTrigger ? 'Saving…' : 'Save Trigger Settings'}
+          </button>
+          {triggerSaved && <span className="text-xs text-green-600 font-medium">Saved</span>}
+        </div>
+      </div>
 
       {/* Steps list */}
       <div className="space-y-4 mb-10">

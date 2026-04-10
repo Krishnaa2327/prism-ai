@@ -140,7 +140,7 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ name, description }),
       }),
-    update: (id: string, data: Partial<Pick<OnboardingFlow, 'name' | 'description' | 'isActive'>>) =>
+    update: (id: string, data: Partial<Pick<OnboardingFlow, 'name' | 'description' | 'isActive' | 'triggerDelayMs' | 'urlPattern' | 'maxTriggersPerUser'>>) =>
       apiFetch<{ updated: boolean }>(`/api/v1/flow/${id}`, {
         method: 'PUT',
         body: JSON.stringify(data),
@@ -435,6 +435,9 @@ export interface OnboardingFlow {
   name: string;
   description: string;
   isActive: boolean;
+  triggerDelayMs: number;
+  urlPattern: string;
+  maxTriggersPerUser: number;
   createdAt: string;
   updatedAt: string;
   steps: OnboardingStep[];

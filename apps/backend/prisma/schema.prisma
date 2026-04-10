@@ -164,6 +164,10 @@ model OnboardingFlow {
   name           String
   description    String   @default("")
   isActive       Boolean  @default(true) @map("is_active")
+  // Trigger controls — when and where the widget fires
+  triggerDelayMs      Int    @default(30000) @map("trigger_delay_ms")     // ms after page load
+  urlPattern          String @default("") @map("url_pattern")             // comma-separated patterns, empty = all pages
+  maxTriggersPerUser  Int    @default(0)   @map("max_triggers_per_user")  // 0 = unlimited
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 

@@ -276,6 +276,12 @@ router.post('/start', async (req: AuthenticatedRequest, res: Response) => {
       flow: { id: flow.id, name: flow.name, steps: flow.steps },
     },
     isReturning: otherSessionCount > 0,
+    // Trigger controls — widget reads these to decide when/where to show
+    trigger: {
+      delayMs: flow.triggerDelayMs,
+      urlPattern: flow.urlPattern,
+      maxTriggersPerUser: flow.maxTriggersPerUser,
+    },
   });
 });
 

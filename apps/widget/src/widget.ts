@@ -89,7 +89,22 @@ export class OnboardAIWidget {
     const active = session ?? this.copilot.getSession();
 
     if (active) {
-      const delay = (resuming || hasCached) ? 0 : (this.config.triggerDelay ?? 2000);
+      // Respect server-side trigger controls
+      const trigger = this.copilot.getTriggerConfig();
+
+      // 1. URL pattern check — skip if current page doesn't match
+      if (!this.copilot.shouldTriggerOnCurrentPage()) return;
+
+      // 2. Max triggers check — track show count in localStorage
+      if (trigger.maxTriggersPerUser > 0) {
+        const countKey = `_prism_tc_${this.config.apiKey.slice(0, 8)}_${userId}`;
+        const shown = parseInt(localStorage.getItem(countKey) ?? '0', 10);
+        if (shown >= trigger.maxTriggersPerUser) return;
+        localStorage.setItem(countKey, String(shown + 1));
+      }
+
+      // 3. Delay — use server config, skip if returning/resuming
+      const delay = (resuming || hasCached) ? 0 : trigger.delayMs;
       setTimeout(() => {
         this.bubbleEl.style.display = 'flex';
         this.openCopilot();
