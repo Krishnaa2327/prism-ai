@@ -4,26 +4,17 @@ import { usePathname } from 'next/navigation';
 import { useAuthStore } from '@/store/auth';
 
 const nav = [
-  { href: '/dashboard',              label: 'Dashboard',     icon: '▦' },
-  { href: '/flows',                  label: 'Onboarding Flows', icon: '🗺️' },
-  { href: '/flows/health',           label: 'Flow Health',      icon: '🩺' },
-  { href: '/activation',             label: 'Activation',    icon: '🚀' },
-  { href: '/benchmarks',             label: 'Benchmarks',    icon: '📊' },
-  { href: '/optimize',               label: 'Optimize',      icon: '✨' },
-  { href: '/experiments',            label: 'Experiments',   icon: '🧪' },
-  { href: '/churn',                  label: 'Churn Risk',    icon: '🔥' },
-  { href: '/users',                   label: 'Users',         icon: '👤' },
-  { href: '/escalations',            label: 'Escalations',   icon: '🚨' },
-  { href: '/conversations',          label: 'Conversations', icon: '💬' },
-  { href: '/analytics',              label: 'Analytics',     icon: '📈' },
-  { href: '/settings/autooptimize',  label: 'Auto-Optimize', icon: '🤖' },
-  { href: '/settings/knowledge',     label: 'Knowledge Base', icon: '📚' },
-  { href: '/settings/integrations',  label: 'Integrations',  icon: '🔌' },
-  { href: '/settings/ai',            label: 'AI Config',     icon: '🤖' },
-  { href: '/settings/widget',        label: 'Widget',        icon: '⚡' },
-  { href: '/settings/alerts',         label: 'Alerts',        icon: '🔔' },
-  { href: '/settings/followup',      label: 'Follow-up',     icon: '📣' },
-  { href: '/settings/billing',       label: 'Billing',       icon: '💳' },
+  { href: '/dashboard',            label: 'Dashboard',       icon: '▦' },
+  { href: '/flows',                label: 'Flows',           icon: '◈' },
+  { href: '/activation',           label: 'Activation',      icon: '◎' },
+  { href: '/users',                label: 'Users',           icon: '◉' },
+  { href: '/escalations',          label: 'Escalations',     icon: '◬' },
+  { href: '/conversations',        label: 'Conversations',   icon: '◷' },
+  { href: '/analytics',            label: 'Analytics',       icon: '◱' },
+  { href: '/settings/knowledge',   label: 'Knowledge Base',  icon: '◫' },
+  { href: '/settings/ai',          label: 'AI Config',       icon: '◈' },
+  { href: '/settings/widget',      label: 'Widget',          icon: '◆' },
+  { href: '/settings/billing',     label: 'Billing',         icon: '◇' },
 ];
 
 export default function Sidebar() {
@@ -34,7 +25,7 @@ export default function Sidebar() {
     <aside className="w-56 min-h-screen bg-white border-r border-slate-200 flex flex-col fixed left-0 top-0">
       {/* Logo */}
       <div className="px-5 py-5 border-b border-slate-100">
-        <span className="text-lg font-bold text-brand-600">OnboardAI</span>
+        <span className="text-lg font-bold text-brand-600">Prism</span>
         {org && <p className="text-xs text-slate-400 mt-0.5 truncate">{org.name}</p>}
       </div>
 

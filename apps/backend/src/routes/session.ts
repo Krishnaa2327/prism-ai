@@ -4,7 +4,7 @@ import { prisma } from '../lib/prisma';
 import { authenticateApiKey } from '../middleware/auth';
 import { runAgent } from '../services/agent';
 import { detectIntent } from '../services/intent';
-import { fireIntegrationEvents } from '../services/integrations';
+
 import { getUserHistory } from '../services/userhistory';
 import { createEscalationTicket, notifyTeam } from '../services/escalation';
 import { AuthenticatedRequest } from '../types';
@@ -389,22 +389,7 @@ router.post('/act', async (req: AuthenticatedRequest, res: Response) => {
       });
     }
 
-    // Fire integration events (non-blocking)
-    const endUser = await prisma.endUser.findUnique({ where: { id: session.endUserId }, select: { externalId: true } });
-    if (endUser?.externalId) {
-      fireIntegrationEvents({
-        orgId: req.organization!.id,
-        userId: endUser.externalId,
-        event: nextStep ? 'Step Completed' : 'Onboarding Completed',
-        properties: {
-          stepTitle: currentStep.title,
-          stepOrder: currentStep.order,
-          flowName: session.flow.name,
-          isMilestone: currentStep.isMilestone,
-          timeSpentMs,
-          aiAssisted: true,
-        },
-      }).catch(() => {});
+    {
     }
   } else if (action.type === 'celebrate_milestone') {
     await prisma.userOnboardingSession.update({
@@ -413,12 +398,6 @@ router.post('/act', async (req: AuthenticatedRequest, res: Response) => {
         firstValueAt: new Date(),
         lastActiveAt: new Date(),
       },
-    });
-  } else if (action.type === 'verify_integration') {
-    // Just update last active — don't count as a message attempt
-    await prisma.userOnboardingSession.update({
-      where: { id: session.id },
-      data: { lastActiveAt: new Date() },
     });
   } else if (action.type === 'escalate_to_human') {
     // Create ticket + notify team (non-blocking)
@@ -535,23 +514,6 @@ router.post('/event', async (req: AuthenticatedRequest, res: Response) => {
     });
   }
 
-  // Fire integration events (non-blocking)
-  const endUser = await prisma.endUser.findUnique({ where: { id: session.endUserId }, select: { externalId: true } });
-  if (endUser?.externalId) {
-    fireIntegrationEvents({
-      orgId: req.organization!.id,
-      userId: endUser.externalId,
-      event: nextStep ? 'Step Completed' : 'Onboarding Completed',
-      properties: {
-        stepTitle: currentStep.title,
-        stepOrder: currentStep.order,
-        flowName: session.flow.name,
-        isMilestone,
-        completionEvent: eventType,
-        aiAssisted: false,
-      },
-    }).catch(() => {});
-  }
 
   res.json({ advanced: true, nextStep: nextStep ?? null, milestone: isMilestone });
 });

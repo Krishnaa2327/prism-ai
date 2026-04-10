@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import { OnboardingStep, Organization } from '@prisma/client';
-import { testIntegration, IntegrationType } from './integrations';
+
 import { executeApiCall, interpolate } from './apicall';
 import { searchKnowledgeBase } from './knowledge';
 
@@ -124,29 +124,6 @@ const AGENT_TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
-      name: 'verify_integration',
-      description:
-        'Test whether an API key or webhook URL provided by the user actually works. Use this when the user says they have connected a tool (Segment, Mixpanel, HubSpot, or a webhook) and you want to verify it before completing the step.',
-      parameters: {
-        type: 'object',
-        properties: {
-          type: {
-            type: 'string',
-            enum: ['segment', 'mixpanel', 'hubspot', 'webhook'],
-            description: 'The integration type to verify',
-          },
-          credential: {
-            type: 'string',
-            description: 'The API key, token, or URL to test',
-          },
-        },
-        required: ['type', 'credential'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
       name: 'escalate_to_human',
       description:
         'Hand the user off to a human support agent. Use when: (1) the user explicitly asks to speak to a human, (2) they are clearly frustrated and the AI cannot resolve their issue, (3) the issue is outside the scope of onboarding (billing, bugs, refunds). Do NOT use for questions you can answer.',
@@ -210,7 +187,7 @@ export type AgentAction =
   | { type: 'execute_page_action'; actionType: string; payload: Record<string, unknown>; message: string }
   | { type: 'complete_step'; message: string; collectedData?: Record<string, unknown> }
   | { type: 'celebrate_milestone'; headline: string; insight: string }
-  | { type: 'verify_integration'; integType: string; success: boolean; message: string }
+
   | { type: 'call_api'; url: string; method: string; reason: string }
   | { type: 'escalate_to_human'; reason: string; trigger: string; message: string }
   | { type: 'chat'; content: string };
@@ -379,26 +356,6 @@ ${org.customInstructions ?? ''}`.trim();
       };
     }
 
-    if (name === 'verify_integration') {
-      const integType = input.type as IntegrationType;
-      const credential = input.credential as string;
-
-      const credMap: Record<IntegrationType, Record<string, string>> = {
-        segment:  { writeKey: credential },
-        mixpanel: { token: credential },
-        hubspot:  { apiKey: credential },
-        webhook:  { url: credential },
-      };
-
-      const result = await testIntegration(integType, credMap[integType] ?? { key: credential });
-      return {
-        type: 'verify_integration',
-        integType,
-        success: result.success,
-        message: result.message,
-      };
-    }
-
     if (name === 'escalate_to_human') {
       return {
         type: 'escalate_to_human',
@@ -482,13 +439,7 @@ ${org.customInstructions ?? ''}`.trim();
         if (fname === 'celebrate_milestone') {
           return { type: 'celebrate_milestone', headline: finput.headline as string, insight: finput.insight as string };
         }
-        if (fname === 'verify_integration') {
-          const it = finput.type as IntegrationType;
-          const cred = finput.credential as string;
-          const cm: Record<IntegrationType, Record<string, string>> = { segment: { writeKey: cred }, mixpanel: { token: cred }, hubspot: { apiKey: cred }, webhook: { url: cred } };
-          const vr = await testIntegration(it, cm[it] ?? { key: cred });
-          return { type: 'verify_integration', integType: it, success: vr.success, message: vr.message };
-        }
+
       }
 
       const fallback = followUpMsg.content ?? 'API call completed.';
