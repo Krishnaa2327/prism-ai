@@ -66,7 +66,6 @@ router.post('/checkout', authenticateJWT, async (req: AuthenticatedRequest, res:
 
   const org = await prisma.organization.findUniqueOrThrow({
     where: { id: organizationId },
-    select: { id: true, name: true, stripeCustomerId: true },
     include: { users: { where: { role: 'owner' }, select: { email: true }, take: 1 } },
   });
 

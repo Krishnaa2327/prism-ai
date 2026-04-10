@@ -1,4 +1,5 @@
 import { Router, Response } from 'express';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { authenticateJWT } from '../middleware/auth';
 import { AuthenticatedRequest } from '../types';
@@ -43,7 +44,7 @@ router.post('/from-template', async (req: AuthenticatedRequest, res: Response) =
           aiPrompt: s.aiPrompt,
           smartQuestions: s.smartQuestions,
           actionType: s.actionType,
-          actionConfig: s.actionConfig,
+          actionConfig: s.actionConfig as Prisma.InputJsonValue,
           completionEvent: s.completionEvent,
           isMilestone: s.isMilestone,
         })),
@@ -152,7 +153,7 @@ router.post('/:id/steps', async (req: AuthenticatedRequest, res: Response) => {
       aiPrompt: aiPrompt ?? '',
       smartQuestions: smartQuestions ?? [],
       actionType: actionType ?? null,
-      actionConfig: actionConfig ?? {},
+      actionConfig: (actionConfig ?? {}) as Prisma.InputJsonValue,
       completionEvent: completionEvent ?? null,
       isMilestone: isMilestone ?? false,
     },
@@ -187,9 +188,9 @@ router.put('/:id/steps/:stepId', async (req: AuthenticatedRequest, res: Response
       ...(intent !== undefined && { intent: intent as string }),
       ...(description !== undefined && { description: description as string }),
       ...(aiPrompt !== undefined && { aiPrompt: aiPrompt as string }),
-      ...(smartQuestions !== undefined && { smartQuestions }),
+      ...(smartQuestions !== undefined && { smartQuestions: smartQuestions as Prisma.InputJsonValue }),
       ...(actionType !== undefined && { actionType: actionType as string | null }),
-      ...(actionConfig !== undefined && { actionConfig }),
+      ...(actionConfig !== undefined && { actionConfig: actionConfig as Prisma.InputJsonValue }),
       ...(completionEvent !== undefined && { completionEvent: completionEvent as string | null }),
       ...(isMilestone !== undefined && { isMilestone: isMilestone as boolean }),
       ...(order !== undefined && { order: order as number }),

@@ -1,4 +1,5 @@
 import { Router, Response } from 'express';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { authenticateJWT } from '../middleware/auth';
 import { AuthenticatedRequest } from '../types';
@@ -72,13 +73,13 @@ router.post('/', async (req: AuthenticatedRequest, res: Response) => {
       organizationId: orgId,
       type,
       enabled: enabled ?? true,
-      credentials: mergedCreds,
-      settings: settings ?? {},
+      credentials: mergedCreds as Prisma.InputJsonValue,
+      settings: (settings ?? {}) as Prisma.InputJsonValue,
     },
     update: {
       enabled: enabled ?? true,
-      credentials: mergedCreds,
-      settings: settings ?? {},
+      credentials: mergedCreds as Prisma.InputJsonValue,
+      settings: (settings ?? {}) as Prisma.InputJsonValue,
     },
   });
 

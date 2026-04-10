@@ -1,4 +1,5 @@
 import { Router, Response } from 'express';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { authenticateApiKey } from '../middleware/auth';
 import { runAgent } from '../services/agent';
@@ -18,10 +19,10 @@ async function getOrCreateEndUser(orgId: string, userId: string, metadata: Recor
     create: {
       organizationId: orgId,
       externalId: userId,
-      metadata,
+      metadata: metadata as Prisma.InputJsonValue,
       lastSeenAt: new Date(),
     },
-    update: { metadata, lastSeenAt: new Date() },
+    update: { metadata: metadata as Prisma.InputJsonValue, lastSeenAt: new Date() },
   });
 }
 
@@ -371,7 +372,7 @@ router.post('/act', async (req: AuthenticatedRequest, res: Response) => {
         where: { id: session.id },
         data: {
           currentStepId: nextStep.id,
-          collectedData: newData,
+          collectedData: newData as Prisma.InputJsonValue,
           lastActiveAt: new Date(),
         },
       });
@@ -381,7 +382,7 @@ router.post('/act', async (req: AuthenticatedRequest, res: Response) => {
         where: { id: session.id },
         data: {
           status: 'completed',
-          collectedData: newData,
+          collectedData: newData as Prisma.InputJsonValue,
           completedAt: new Date(),
           lastActiveAt: new Date(),
         },
