@@ -158,7 +158,13 @@ export function addStepPill(messagesEl: HTMLElement, label: string) {
 export function addActionToast(messagesEl: HTMLElement, message: string) {
   const toast = document.createElement('div');
   toast.className = 'oai-action-toast';
-  toast.innerHTML = `<span class="oai-toast-icon">✅</span><span>${message}</span>`;
+  const icon = document.createElement('span');
+  icon.className = 'oai-toast-icon';
+  icon.textContent = '✅';
+  const text = document.createElement('span');
+  text.textContent = message;
+  toast.appendChild(icon);
+  toast.appendChild(text);
   messagesEl.appendChild(toast);
   messagesEl.scrollTop = messagesEl.scrollHeight;
   return toast;
@@ -205,11 +211,16 @@ export function addChips(
 export function addCelebration(messagesEl: HTMLElement, headline: string, insight: string) {
   const card = document.createElement('div');
   card.className = 'oai-celebration';
-  card.innerHTML = `
-    <span class="oai-celebration-emoji">🎉</span>
-    <div class="oai-celebration-headline">${headline}</div>
-    <div class="oai-celebration-insight">${insight}</div>
-  `;
+  const emoji = document.createElement('span');
+  emoji.className = 'oai-celebration-emoji';
+  emoji.textContent = '🎉';
+  const h = document.createElement('div');
+  h.className = 'oai-celebration-headline';
+  h.textContent = headline;
+  const ins = document.createElement('div');
+  ins.className = 'oai-celebration-insight';
+  ins.textContent = insight;
+  card.append(emoji, h, ins);
   messagesEl.appendChild(card);
   messagesEl.scrollTop = messagesEl.scrollHeight;
   return card;

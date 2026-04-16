@@ -70,7 +70,7 @@ STRIPE_PRICE_GROWTH       = price_...
 STRIPE_PRICE_SCALE        = price_...
 ADMIN_SECRET              = (any random string — for /admin/* endpoints)
 NODE_ENV                  = production
-FRONTEND_URL              = https://app.onboardai.com
+FRONTEND_URL              = https://app.useprism.ai
 PORT                      = 4000
 
 # Optional — for rate limiting:
@@ -94,7 +94,7 @@ UPSTASH_REDIS_TOKEN       = ...
 NEXT_PUBLIC_API_URL = https://xxxx.railway.app
 ```
 
-5. Deploy → add custom domain `app.onboardai.com`
+5. Deploy → add custom domain `app.useprism.ai`
 
 ---
 
@@ -105,10 +105,10 @@ NEXT_PUBLIC_API_URL = https://xxxx.railway.app
 3. Add environment variable:
 
 ```
-NEXT_PUBLIC_DASHBOARD_URL = https://app.onboardai.com
+NEXT_PUBLIC_DASHBOARD_URL = https://app.useprism.ai
 ```
 
-4. Deploy → add custom domain `onboardai.com`
+4. Deploy → add custom domain `useprism.ai`
 
 ---
 
@@ -134,19 +134,19 @@ Copy the `whsec_...` signing secret → add as `STRIPE_WEBHOOK_SECRET` in Railwa
 
 ## Step 7 — Host widget JS on CDN
 
-The embed snippet loads from `https://cdn.onboardai.com/widget.js`.
+The embed snippet loads from `https://cdn.useprism.ai/widget.js`.
 
 **Option A — Vercel (easiest):**
 ```bash
 cd apps/widget && npm run build
 # → dist/widget/widget.iife.js
 ```
-Create a Vercel project pointing at `dist/widget/`, add custom domain `cdn.onboardai.com`.
+Create a Vercel project pointing at `dist/widget/`, add custom domain `cdn.useprism.ai`.
 
 **Option B — Cloudflare R2:**
 1. Build: `cd apps/widget && npm run build`
 2. Upload `dist/widget/widget.iife.js` to R2 bucket as `widget.js`
-3. Enable public access + point `cdn.onboardai.com` CNAME to R2 URL
+3. Enable public access + point `cdn.useprism.ai` CNAME to R2 URL
 
 ---
 
@@ -180,7 +180,7 @@ curl -H "X-API-Key: org_FROM_SEED" \
 
 ## Step 9 — Full end-to-end test
 
-1. Log in to `app.onboardai.com` with the seeded account
+1. Log in to `app.useprism.ai` with the seeded account
 2. Go to **Flows** — you should see "Analytics SaaS Onboarding" pre-seeded
 3. Go to **Settings → Widget** — copy your API key
 4. Open `apps/widget/test.html` locally, paste your API key
@@ -222,9 +222,9 @@ Infrastructure
 [ ] Backend deployed — /health returns 200
 [ ] Database migrated — all 15 tables exist
 [ ] Demo flow seeded — API key printed
-[ ] Dashboard live at app.onboardai.com
-[ ] Landing page live at onboardai.com
-[ ] Widget JS on CDN at cdn.onboardai.com/widget.js
+[ ] Dashboard live at app.useprism.ai
+[ ] Landing page live at useprism.ai
+[ ] Widget JS on CDN at cdn.useprism.ai/widget.js
 [ ] Stripe webhook delivering events
 
 End-to-end test
@@ -249,13 +249,13 @@ Go-to-market
 
 ```bash
 # All orgs (admin only)
-curl -H "X-Admin-Secret: $ADMIN_SECRET" https://api.onboardai.com/api/v1/admin/orgs
+curl -H "X-Admin-Secret: $ADMIN_SECRET" https://api.useprism.ai/api/v1/admin/orgs
 
 # At-risk users across all sessions (pick an org's JWT)
 curl -H "Authorization: Bearer $JWT" \
-  https://api.onboardai.com/api/v1/churn/summary
+  https://api.useprism.ai/api/v1/churn/summary
 
 # Auto-optimize log
 curl -H "Authorization: Bearer $JWT" \
-  https://api.onboardai.com/api/v1/autooptimize/log
+  https://api.useprism.ai/api/v1/autooptimize/log
 ```

@@ -9,7 +9,7 @@ export interface WidgetConfig {
 }
 
 export const DEFAULT_CONFIG: Required<Omit<WidgetConfig, 'apiKey' | 'userId' | 'metadata'>> = {
-  apiUrl: 'http://localhost:4000',
+  apiUrl: 'https://api.useprism.ai',
   idleThreshold: 30_000,
   primaryColor: '#6366f1', // indigo
 };

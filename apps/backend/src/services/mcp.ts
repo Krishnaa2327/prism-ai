@@ -10,6 +10,7 @@
 import OpenAI from 'openai';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
+import { assertPublicUrl } from '../lib/ipGuard';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -59,6 +60,12 @@ async function rpc<T>(
   timeoutMs: number,
 ): Promise<T | null> {
   try {
+    await assertPublicUrl(serverUrl);
+  } catch {
+    logger.warn('[mcp] SSRF blocked', { serverUrl });
+    return null;
+  }
+  try {
     const res = await fetch(serverUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders(auth.type, auth.value) },
@@ -84,6 +91,24 @@ function toOpenAIName(connectorId: string, toolName: string): string {
   return `${prefix}__${safe}`;
 }
 
+// ─── Sanitise external tool metadata ─────────────────────────────────────────
+function sanitizeJsonSchema(schema: unknown): Record<string, unknown> {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return { type: 'object', properties: {} };
+  const s = schema as Record<string, unknown>;
+  const ALLOWED = new Set(['type','properties','required','items','enum','minimum','maximum','minLength','maxLength','pattern','additionalProperties','description','title','default','format','anyOf','oneOf','allOf']);
+  const out: Record<string, unknown> = {};
+  for (const k of ALLOWED) { if (k in s) out[k] = s[k]; }
+  if (typeof out['description'] === 'string') out['description'] = out['description'].slice(0, 128);
+  return out;
+}
+function sanitizeMcpTool(tool: McpTool): McpTool {
+  return {
+    name: String(tool.name ?? '').slice(0, 64).replace(/[^a-zA-Z0-9_-]/g, '_') || 'unknown_tool',
+    description: String(tool.description ?? '').slice(0, 256),
+    inputSchema: sanitizeJsonSchema(tool.inputSchema),
+  };
+}
+
 // ─── Fetch tools for one connector ───────────────────────────────────────────
 async function fetchConnectorTools(c: ConnectorRow): Promise<McpTool[]> {
   const cached = toolListCache.get(c.id);
@@ -97,7 +122,8 @@ async function fetchConnectorTools(c: ConnectorRow): Promise<McpTool[]> {
     3000, // 3 s — skip slow servers
   );
 
-  const tools = result?.tools ?? [];
+  const raw = result?.tools ?? [];
+  const tools = raw.map(sanitizeMcpTool);
   toolListCache.set(c.id, { tools, fetchedAt: Date.now() });
   return tools;
 }

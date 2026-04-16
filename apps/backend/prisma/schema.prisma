@@ -24,6 +24,7 @@ model Organization {
   // Broken-selector alerts
   selectorAlertEnabled Boolean  @default(false) @map("selector_alert_enabled")
   selectorAlertWebhook String?  @map("selector_alert_webhook")
+  languagePreference   String   @default("en") @map("language_preference")
   createdAt            DateTime @default(now()) @map("created_at")
   updatedAt            DateTime @updatedAt @map("updated_at")
 
@@ -166,6 +167,7 @@ model OnboardingFlow {
   name           String
   description    String   @default("")
   isActive       Boolean  @default(true) @map("is_active")
+  executionMode  String   @default("execute") @map("execution_mode") // recommend | guided | execute
   // Trigger controls — when and where the widget fires
   triggerDelayMs      Int    @default(30000) @map("trigger_delay_ms")     // ms after page load
   urlPattern          String @default("") @map("url_pattern")             // comma-separated patterns, empty = all pages

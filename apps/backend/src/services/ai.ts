@@ -5,6 +5,13 @@ import { Organization, EndUser } from '@prisma/client';
 
 const claude = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY });
 
+// ─── Language instruction ─────────────────────────────────────────────────────
+export function getLanguageInstruction(lang?: string | null): string {
+  if (lang === 'hi') return '\nLANGUAGE: Always respond in Hindi (Devanagari script). Keep technical terms in English.';
+  if (lang === 'hinglish') return '\nLANGUAGE: Respond in Hinglish — natural Hindi+English mix in Roman script. Example: "Yahan click karein, phir apna naam enter karein."';
+  return '';
+}
+
 // ─── Build the system prompt for each organization ───────────────────────────
 function buildSystemPrompt(org: Organization, endUser: EndUser): string {
   const metadata = endUser.metadata as Record<string, unknown>;
@@ -34,7 +41,7 @@ When a user asks "how do I…" or needs a multi-step guide, respond with ONLY th
 Use 2-5 steps. Keep each step under 15 words. Start each with a verb (Click, Enter, Select, etc.).
 Only use the steps format when it genuinely helps — plain text is fine for simple answers.
 
-${org.customInstructions ?? ''}`.trim();
+${org.customInstructions ?? ''}${getLanguageInstruction((org as any).languagePreference)}`.trim();
 }
 
 // ─── Main handler called from the messages route ─────────────────────────────

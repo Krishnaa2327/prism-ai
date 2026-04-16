@@ -6,6 +6,10 @@ import { prisma } from '../lib/prisma';
 
 const DASHBOARD_URL = process.env.FRONTEND_URL ?? 'https://app.useprism.ai';
 
+function esc(s: unknown): string {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 export interface EscalationContext {
   userId: string | null;
   userMetadata: Record<string, unknown>;
@@ -70,10 +74,10 @@ export async function notifyTeam(params: {
   if (owner?.email && process.env.RESEND_API_KEY) {
     const resend = new Resend(process.env.RESEND_API_KEY);
     const recentConvo = context.recentMessages.slice(-4)
-      .map((m) => `<tr><td style="padding:4px 0;color:${m.role === 'user' ? '#1e293b' : '#6366f1'};font-size:13px;"><strong>${m.role === 'user' ? 'User' : 'AI'}:</strong> ${m.content}</td></tr>`)
+      .map((m) => `<tr><td style="padding:4px 0;color:${m.role === 'user' ? '#1e293b' : '#6366f1'};font-size:13px;"><strong>${m.role === 'user' ? 'User' : 'AI'}:</strong> ${esc(m.content)}</td></tr>`)
       .join('');
     const dataRows = Object.entries(context.collectedData)
-      .map(([k, v]) => `<tr><td style="color:#64748b;font-size:12px;padding:2px 8px 2px 0">${k}</td><td style="color:#1e293b;font-size:12px;">${v}</td></tr>`)
+      .map(([k, v]) => `<tr><td style="color:#64748b;font-size:12px;padding:2px 8px 2px 0">${esc(k)}</td><td style="color:#1e293b;font-size:12px;">${esc(v)}</td></tr>`)
       .join('');
 
     tasks.push(resend.emails.send({

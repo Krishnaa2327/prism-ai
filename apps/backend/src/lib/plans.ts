@@ -9,7 +9,18 @@ export interface Plan {
   mcpConnectorLimit: number;// max MCP connectors; 0 = unlimited
   priceId: string | null;   // null = free (no Stripe price)
   price: number;            // USD per month, for display only
+  inrPrice: number;         // INR per month, for India display
   features: string[];       // shown on billing page
+}
+
+export function validatePricingConfig(): void {
+  if (process.env.NODE_ENV !== 'production') return;
+  const missing = Object.entries(PLANS).filter(([, p]) => p.price > 0 && !p.priceId).map(([k]) => k);
+  if (missing.length > 0) {
+    console.error(`[plans] FATAL: Missing Stripe price IDs for paid plans: ${missing.join(', ')}`);
+    console.error('[plans] Set STRIPE_PRICE_STARTER, STRIPE_PRICE_GROWTH, STRIPE_PRICE_SCALE env vars.');
+    process.exit(1);
+  }
 }
 
 export const PLANS: Record<string, Plan> = {
@@ -18,9 +29,10 @@ export const PLANS: Record<string, Plan> = {
     monthlyMessageLimit: 1_000,
     agentLimit: 3,
     mtuLimit: 100,
-    mcpConnectorLimit: 0,   // unlimited
+    mcpConnectorLimit: 3,
     priceId: null,
     price: 0,
+    inrPrice: 0,
     features: [
       'Up to 3 AI agents',
       '100 Monthly Tracked Users',
@@ -37,8 +49,9 @@ export const PLANS: Record<string, Plan> = {
     agentLimit: 10,
     mtuLimit: 1_000,
     mcpConnectorLimit: 0,
-    priceId: process.env.STRIPE_PRICE_STARTER ?? 'price_starter_placeholder',
+    priceId: process.env.STRIPE_PRICE_STARTER ?? null,
     price: 99,
+    inrPrice: 799,
     features: [
       'Up to 10 AI agents',
       '1,000 Monthly Tracked Users',
@@ -57,8 +70,9 @@ export const PLANS: Record<string, Plan> = {
     agentLimit: 0,
     mtuLimit: 10_000,
     mcpConnectorLimit: 0,
-    priceId: process.env.STRIPE_PRICE_GROWTH ?? 'price_growth_placeholder',
+    priceId: process.env.STRIPE_PRICE_GROWTH ?? null,
     price: 299,
+    inrPrice: 2499,
     features: [
       'Unlimited AI agents',
       '10,000 Monthly Tracked Users',
@@ -77,8 +91,9 @@ export const PLANS: Record<string, Plan> = {
     agentLimit: 0,
     mtuLimit: 0,
     mcpConnectorLimit: 0,
-    priceId: process.env.STRIPE_PRICE_SCALE ?? 'price_scale_placeholder',
+    priceId: process.env.STRIPE_PRICE_SCALE ?? null,
     price: 999,
+    inrPrice: 7999,
     features: [
       'Unlimited AI agents',
       'Unlimited Monthly Tracked Users',
@@ -96,7 +111,7 @@ export const PLANS: Record<string, Plan> = {
 };
 
 // Map a Stripe price ID back to a plan key
-export function planFromPriceId(priceId: string): string {
-  const entry = Object.entries(PLANS).find(([, p]) => p.priceId === priceId);
-  return entry?.[0] ?? 'free';
+export function planFromPriceId(priceId: string): string | null {
+  const entry = Object.entries(PLANS).find(([, p]) => p.priceId && p.priceId === priceId);
+  return entry?.[0] ?? null;
 }
