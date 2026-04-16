@@ -4,7 +4,8 @@
 
 import { scanPage } from './scanner';
 import { resolveFromIndex, HealStrategy } from './resolver';
-import { spotlight, beacon, arrowCallout, multiHighlight, ringOnly, removeSpotlight } from './highlighter';
+import { spotlight, beacon, arrowCallout, multiHighlight, removeSpotlight } from './highlighter';
+import { animatedFillFields } from './cursor';
 
 export interface CopilotStep {
   id: string;
@@ -46,7 +47,7 @@ export function matchesUrlPattern(pattern: string, url: string = window.location
 
 export type AgentAction =
   | { type: 'ask_clarification'; question: string; options?: string[] }
-  | { type: 'execute_page_action'; actionType: string; payload: Record<string, unknown>; message: string }
+  | { type: 'execute_page_action'; actionType: string; payload: Record<string, unknown>; message: string; shouldVerify?: boolean }
   | { type: 'complete_step'; message: string }
   | { type: 'celebrate_milestone'; headline: string; insight: string }
   | { type: 'verify_integration'; integType: string; success: boolean; message: string }
@@ -206,30 +207,146 @@ export class CopilotManager {
     }
   }
 
-  async sendMessage(userMessage: string): Promise<AgentAction | null> {
+  async sendMessage(
+    userMessage: string,
+    onText?: (word: string) => void,
+  ): Promise<{ action: AgentAction; messageId: string | null } | null> {
     if (!this.session) return null;
-
     const pageContext = scanPage();
 
+    // ── Try SSE streaming first ───────────────────────────────────────────────
+    try {
+      const res = await fetch(`${this.apiUrl}/api/v1/session/act/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': this.apiKey },
+        body: JSON.stringify({ sessionId: this.session.id, userMessage, pageContext }),
+      });
+
+      if (res.ok && res.body) {
+        const reader  = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const payload = JSON.parse(line.slice(6)) as Record<string, unknown>;
+
+              // Stream text tokens to caller for live rendering
+              if (payload.word && onText) {
+                onText(payload.word as string);
+                continue;
+              }
+
+              if (payload.action) {
+                const action = payload.action as AgentAction;
+                const messageId = (payload.messageId as string | null) ?? null;
+                if (action.type === 'complete_step' || action.type === 'celebrate_milestone') {
+                  await this.refreshSession();
+                }
+                this.emit(action);
+                return { action, messageId };
+              }
+            } catch { /* partial JSON — skip */ }
+          }
+        }
+      }
+    } catch { /* network failure — fall through to non-streaming fallback */ }
+
+    // ── Fallback: non-streaming /act ─────────────────────────────────────────
     try {
       const res = await fetch(`${this.apiUrl}/api/v1/session/act`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-API-Key': this.apiKey },
         body: JSON.stringify({ sessionId: this.session.id, userMessage, pageContext }),
       });
-      const data = await res.json();
-      const action: AgentAction = data.action;
-
-      // Update local session state based on action
+      if (!res.ok) return null;
+      const data = await res.json() as { action: AgentAction; messageId: string | null };
+      const action = data.action;
       if (action.type === 'complete_step' || action.type === 'celebrate_milestone') {
         await this.refreshSession();
       }
-
       this.emit(action);
-      return action;
+      return { action, messageId: data.messageId ?? null };
     } catch {
       return null;
     }
+  }
+
+  async sendFeedback(messageId: string, value: 1 | -1): Promise<void> {
+    try {
+      await fetch(`${this.apiUrl}/api/v1/session/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': this.apiKey },
+        body: JSON.stringify({ messageId, value }),
+      });
+    } catch { /* never interrupt the flow */ }
+  }
+
+  /**
+   * Notify the backend of a page change so the agent can re-evaluate which
+   * step the user is on and advance the session if appropriate.
+   * Called automatically on popstate / history.pushState navigation.
+   */
+  async notifyPageChange(newPath: string): Promise<void> {
+    if (!this.session || !this.userId) return;
+    try {
+      const res = await fetch(`${this.apiUrl}/api/v1/session/page-change`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': this.apiKey },
+        body: JSON.stringify({ sessionId: this.session.id, page: newPath }),
+      });
+      const data = await res.json();
+      if (data.advanced) {
+        await this.refreshSession();
+      }
+    } catch { /* silent */ }
+  }
+
+  /**
+   * Patch history.pushState and listen to popstate so SPA navigations
+   * are intercepted without requiring the host app to call anything.
+   */
+  watchNavigation(): void {
+    const notify = (path: string) => this.notifyPageChange(path);
+
+    // Intercept pushState (React Router, Next.js, etc.)
+    const origPush = history.pushState.bind(history);
+    history.pushState = function (...args) {
+      origPush(...args);
+      notify(window.location.pathname);
+    };
+
+    // Intercept replaceState
+    const origReplace = history.replaceState.bind(history);
+    history.replaceState = function (...args) {
+      origReplace(...args);
+      notify(window.location.pathname);
+    };
+
+    // Back/forward buttons
+    window.addEventListener('popstate', () => notify(window.location.pathname));
+  }
+
+  /**
+   * Send a __verify__ message after a page action completes.
+   * The agent checks the updated DOM and either completes the step or retries.
+   * Non-blocking — fires after a 2s settle delay.
+   */
+  scheduleVerify(): void {
+    if (!this.session) return;
+    setTimeout(async () => {
+      const result = await this.sendMessage('__verify__');
+      if (result) this.emit(result.action);
+    }, 2000);
   }
 
   async fireEvent(eventType: string): Promise<void> {
@@ -289,30 +406,37 @@ export class CopilotManager {
 
     if (actionType === 'fill_form') {
       const fields = payload.fields as Record<string, string> ?? {};
-      const selectors = Object.keys(fields);
 
-      // Spotlight the first field using the resolved element
-      if (selectors.length > 0) {
-        const firstResult = resolveFromIndex(selectors[0]);
-        if (firstResult) {
-          if (firstResult.healed) this.reportHeal({ originalSelector: selectors[0], usedSelector: firstResult.usedSelector, strategy: firstResult.strategy, actionType });
-          ringOnly(firstResult.healed ? (firstResult.usedSelector ?? selectors[0]) : selectors[0], 2000);
-        }
-      }
-
+      // Build a resolved map: selector → value, healing as we go
+      const resolvedFields: Record<string, string> = {};
       for (const [selector, value] of Object.entries(fields)) {
         const result = resolveFromIndex(selector);
         if (!result) {
           this.reportHeal({ originalSelector: selector, strategy: 'failed', actionType });
           continue;
         }
-        if (result.healed) this.reportHeal({ originalSelector: selector, usedSelector: result.usedSelector, strategy: result.strategy, actionType });
-        const el = result.el as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
-        el.focus();
-        el.value = value;
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
+        if (result.healed) {
+          this.reportHeal({ originalSelector: selector, usedSelector: result.usedSelector, strategy: result.strategy, actionType });
+        }
+        // Key by the effective (possibly healed) selector so getEl can find the element
+        resolvedFields[result.usedSelector ?? selector] = value;
       }
+
+      // Animate cursor to each field then type — non-blocking for the UI thread
+      animatedFillFields(resolvedFields, (sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return null;
+        return el as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+      }).catch(() => {
+        // If animation fails for any reason, fall back to direct fill
+        for (const [sel, value] of Object.entries(resolvedFields)) {
+          const el = document.querySelector(sel) as HTMLInputElement | null;
+          if (!el) continue;
+          el.value = value;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      });
     }
 
     if (actionType === 'click') {

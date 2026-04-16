@@ -1,10 +1,9 @@
 // Scans the page for form fields and offers to pre-fill them using
-// the user's known metadata (passed via OnboardAI('init', { metadata: {...} }))
+// the user's known metadata (passed via Prism('init', { metadata: {...} }))
+
+import { animatedFillFields } from './cursor';
 
 type Metadata = Record<string, unknown>;
-
-// ─── Field matching heuristics ───────────────────────────────────────────────
-// Maps common metadata keys → field name/id/placeholder patterns to match against
 
 const FIELD_MAP: Record<string, string[]> = {
   name:        ['name', 'full_name', 'fullname', 'your name', 'full name'],
@@ -22,6 +21,7 @@ const FIELD_MAP: Record<string, string[]> = {
 
 interface MatchedField {
   el: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+  selector: string;
   value: string;
 }
 
@@ -33,7 +33,6 @@ export class FormFiller {
     this.metadata = metadata;
   }
 
-  /** Scan all form fields on the page and return true if any matches found */
   scan(): boolean {
     this.matches = [];
 
@@ -47,55 +46,56 @@ export class FormFiller {
 
       const value = this.matchValue(hint);
       if (value) {
-        this.matches.push({ el, value });
+        this.matches.push({ el, selector: this.selectorFor(el), value });
       }
     }
 
     return this.matches.length > 0;
   }
 
-  /** Fill all matched fields */
-  fill() {
-    for (const { el, value } of this.matches) {
-      el.value = value;
-      // Trigger input/change events so React/Vue/Angular frameworks pick it up
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
+  /** Fill all matched fields — uses animated cursor for visual feedback */
+  async fill(): Promise<void> {
+    if (this.matches.length === 0) return;
 
-      // Brief highlight animation
-      const orig = el.style.outline;
-      el.style.outline = '2px solid #6366f1';
-      setTimeout(() => { el.style.outline = orig; }, 1200);
+    const fields: Record<string, string> = {};
+    for (const { selector, value } of this.matches) {
+      fields[selector] = value;
     }
+
+    await animatedFillFields(fields, (sel) => {
+      const el = document.querySelector(sel);
+      return el ? el as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement : null;
+    });
   }
 
-  /** Extract a normalised hint string from a field element */
+  private selectorFor(el: HTMLElement): string {
+    if (el.id) return `#${el.id}`;
+    const name = el.getAttribute('name');
+    if (name) return `[name="${name}"]`;
+    const testId = el.getAttribute('data-testid');
+    if (testId) return `[data-testid="${testId}"]`;
+    return el.tagName.toLowerCase();
+  }
+
   private getFieldHint(el: HTMLElement): string {
     const parts: string[] = [];
-
-    // id / name attribute
     parts.push(el.getAttribute('id') ?? '');
     parts.push(el.getAttribute('name') ?? '');
     parts.push((el as HTMLInputElement).placeholder ?? '');
-
-    // aria-label
     parts.push(el.getAttribute('aria-label') ?? '');
 
-    // <label> element that references this field
     const id = el.getAttribute('id');
     if (id) {
       const label = document.querySelector(`label[for="${id}"]`);
       if (label) parts.push(label.textContent ?? '');
     }
 
-    // Enclosing label
     const parentLabel = el.closest('label');
     if (parentLabel) parts.push(parentLabel.textContent ?? '');
 
     return parts.join(' ').toLowerCase().replace(/[^a-z0-9 _-]/g, ' ');
   }
 
-  /** Check if any of the hint words match a metadata field */
   private matchValue(hint: string): string {
     for (const [metaKey, patterns] of Object.entries(FIELD_MAP)) {
       const raw = this.metadata[metaKey];
@@ -107,10 +107,9 @@ export class FormFiller {
       }
     }
 
-    // Flatten first/last name → full name if available
     if (FIELD_MAP.name.some((p) => hint.includes(p))) {
       const first = this.metadata.firstName ?? '';
-      const last = this.metadata.lastName ?? '';
+      const last  = this.metadata.lastName  ?? '';
       if (first || last) return `${first} ${last}`.trim();
     }
 

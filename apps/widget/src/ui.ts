@@ -1,4 +1,4 @@
-// ─── UI components for the OnboardAI widget ──────────────────────────────────
+// ─── UI components for the Prism side-panel widget ───────────────────────────
 
 export interface StepsResponse {
   type: 'steps';
@@ -23,40 +23,34 @@ export function createRoot(): HTMLDivElement {
   return root;
 }
 
-// ── Launcher bubble ────────────────────────────────────────────────────────────
-export function createBubble(root: HTMLElement): HTMLButtonElement {
-  const btn = document.createElement('button');
-  btn.id = 'oai-bubble';
-  btn.setAttribute('aria-label', 'Open AI copilot');
-  btn.innerHTML = `
-    <div id="oai-bubble-icon">🤖</div>
-    <span id="oai-bubble-label">Need help?</span>
-    <span id="oai-dot"></span>
-  `;
-  root.appendChild(btn);
-  return btn;
-}
-
-// ── Main panel ─────────────────────────────────────────────────────────────────
-export function createChatWindow(root: HTMLElement): HTMLDivElement {
+// ── Side panel ─────────────────────────────────────────────────────────────────
+export function createSidePanel(root: HTMLElement): HTMLDivElement {
   const win = document.createElement('div');
   win.id = 'oai-window';
   win.className = 'oai-hidden';
-  win.setAttribute('role', 'dialog');
-  win.setAttribute('aria-label', 'AI onboarding copilot');
+  win.setAttribute('role', 'complementary');
+  win.setAttribute('aria-label', 'Prism onboarding guide');
   win.innerHTML = `
+    <!-- Collapse/expand tab on the left edge -->
+    <button id="oai-toggle" aria-label="Collapse panel">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="9 18 15 12 9 6"/>
+      </svg>
+    </button>
+
     <div id="oai-header">
       <div id="oai-header-top">
-        <div id="oai-avatar">🤖</div>
+        <div id="oai-avatar">✦</div>
         <div id="oai-header-text">
-          <p id="oai-header-title">Onboarding Copilot</p>
-          <p id="oai-header-sub">AI · Online</p>
+          <p id="oai-header-title">Prism</p>
+          <p id="oai-header-sub">Your onboarding guide · AI</p>
         </div>
-        <button id="oai-close" aria-label="Close">✕</button>
       </div>
       <div id="oai-steps-nav"></div>
     </div>
+
     <div id="oai-messages" role="log" aria-live="polite"></div>
+
     <div id="oai-input-row">
       <textarea
         id="oai-input"
@@ -68,13 +62,14 @@ export function createChatWindow(root: HTMLElement): HTMLDivElement {
         <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
       </button>
     </div>
-    <div id="oai-footer">Powered by <a href="https://onboardai.com" target="_blank">OnboardAI</a></div>
+
+    <div id="oai-footer">Powered by <a href="https://useprism.ai" target="_blank" rel="noopener">Prism</a></div>
   `;
   root.appendChild(win);
   return win;
 }
 
-// ── Step progress nav (renders inside #oai-steps-nav) ─────────────────────────
+// ── Step progress nav ──────────────────────────────────────────────────────────
 export function renderStepProgress(
   steps: Array<{ id: string; title: string; order: number }>,
   currentStepId: string,
@@ -119,6 +114,39 @@ export function addMessage(
   return div;
 }
 
+// ── Feedback buttons (thumbs up / down on assistant messages) ─────────────────
+export function addFeedbackButtons(
+  msgEl: HTMLElement,
+  onFeedback: (value: 1 | -1) => void
+) {
+  const row = document.createElement('div');
+  row.className = 'oai-feedback';
+
+  const up   = document.createElement('button');
+  const down = document.createElement('button');
+  up.className   = 'oai-feedback-btn';
+  down.className = 'oai-feedback-btn';
+  up.setAttribute('aria-label', 'Helpful');
+  down.setAttribute('aria-label', 'Not helpful');
+  up.textContent   = '👍';
+  down.textContent = '👎';
+
+  const handle = (value: 1 | -1, active: HTMLButtonElement, inactive: HTMLButtonElement) => {
+    active.classList.add('oai-feedback-active');
+    inactive.disabled = true;
+    active.disabled   = true;
+    onFeedback(value);
+  };
+
+  up.addEventListener('click',   () => handle(1,  up,   down));
+  down.addEventListener('click', () => handle(-1, down, up));
+
+  row.appendChild(up);
+  row.appendChild(down);
+  msgEl.appendChild(row);
+  return row;
+}
+
 export function addStepPill(messagesEl: HTMLElement, label: string) {
   const pill = document.createElement('div');
   pill.className = 'oai-step-pill';
@@ -126,7 +154,7 @@ export function addStepPill(messagesEl: HTMLElement, label: string) {
   messagesEl.appendChild(pill);
 }
 
-// ── Action toast (green success card for page actions) ─────────────────────────
+// ── Action toast ───────────────────────────────────────────────────────────────
 export function addActionToast(messagesEl: HTMLElement, message: string) {
   const toast = document.createElement('div');
   toast.className = 'oai-action-toast';
@@ -146,10 +174,12 @@ export function addChips(
   const wrap = document.createElement('div');
   wrap.className = 'oai-msg-ai';
 
-  const q = document.createElement('div');
-  q.style.marginBottom = '10px';
-  q.textContent = question;
-  wrap.appendChild(q);
+  if (question) {
+    const q = document.createElement('div');
+    q.style.marginBottom = '10px';
+    q.textContent = question;
+    wrap.appendChild(q);
+  }
 
   const row = document.createElement('div');
   row.className = 'oai-chips';
@@ -159,7 +189,6 @@ export function addChips(
     btn.textContent = opt;
     btn.style.animationDelay = `${i * 0.06}s`;
     btn.addEventListener('click', () => {
-      // Disable all chips after selection
       wrap.querySelectorAll('.oai-chip').forEach((c) => ((c as HTMLButtonElement).disabled = true));
       onSelect(opt);
     });
@@ -186,20 +215,6 @@ export function addCelebration(messagesEl: HTMLElement, headline: string, insigh
   return card;
 }
 
-// ── Typing indicator ───────────────────────────────────────────────────────────
-export function showTypingIndicator(messagesEl: HTMLElement): HTMLDivElement {
-  const div = document.createElement('div');
-  div.className = 'oai-typing';
-  div.innerHTML = `
-    <div class="oai-dot-bounce"></div>
-    <div class="oai-dot-bounce"></div>
-    <div class="oai-dot-bounce"></div>
-  `;
-  messagesEl.appendChild(div);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
-  return div;
-}
-
 // ── Streaming bubble ───────────────────────────────────────────────────────────
 export function createStreamingBubble(messagesEl: HTMLElement): HTMLDivElement {
   const div = document.createElement('div');
@@ -209,88 +224,26 @@ export function createStreamingBubble(messagesEl: HTMLElement): HTMLDivElement {
   return div;
 }
 
-export function hideDot() {
-  const dot = document.getElementById('oai-dot');
-  if (dot) dot.style.display = 'none';
-}
-
-// ── Bubble nudge (recapture) ───────────────────────────────────────────────────
-// Shows a small animated message next to the launcher bubble without opening
-// the full chat window. Auto-dismisses after 8 seconds.
-const NUDGE_ID = 'oai-nudge';
-
-export function showBubbleNudge(message: string, onClick: () => void): void {
-  hideBubbleNudge(); // remove any existing nudge
-
-  const nudge = document.createElement('div');
-  nudge.id = NUDGE_ID;
-  nudge.setAttribute('role', 'status');
-  nudge.style.cssText = `
-    position:fixed;
-    bottom:80px;
-    right:20px;
-    background:#1e293b;
-    color:#f8fafc;
-    font-size:13px;
-    font-family:inherit;
-    padding:10px 14px;
-    border-radius:12px;
-    box-shadow:0 4px 20px rgba(0,0,0,.25);
-    max-width:240px;
-    line-height:1.45;
-    cursor:pointer;
-    z-index:2147483646;
-    animation:oai-nudge-in .25s cubic-bezier(.34,1.56,.64,1) both;
-  `;
-
-  // Inject keyframe once
-  if (!document.getElementById('oai-nudge-style')) {
-    const style = document.createElement('style');
-    style.id = 'oai-nudge-style';
-    style.textContent = `
-      @keyframes oai-nudge-in {
-        from { opacity:0; transform:translateY(8px) scale(.9); }
-        to   { opacity:1; transform:translateY(0) scale(1); }
-      }
-      #oai-nudge:hover { background:#334155; }
-      #oai-nudge .oai-nudge-arrow {
-        display:block;
-        font-size:11px;
-        margin-top:5px;
-        color:#94a3b8;
-      }
-    `;
-    document.head.appendChild(style);
-  }
-
-  nudge.innerHTML = `${message}<span class="oai-nudge-arrow">Continue where you left off →</span>`;
-  nudge.addEventListener('click', () => { hideBubbleNudge(); onClick(); });
-  document.body.appendChild(nudge);
-
-  // Auto-dismiss after 8 seconds
-  setTimeout(hideBubbleNudge, 8000);
-}
-
-export function hideBubbleNudge(): void {
-  document.getElementById(NUDGE_ID)?.remove();
-}
-
+// ── Steps card (numbered list response) ───────────────────────────────────────
 export function addStepsCard(messagesEl: HTMLElement, steps: StepsResponse): HTMLDivElement {
   const card = document.createElement('div');
   card.className = 'oai-msg-ai';
+
   const title = document.createElement('div');
   title.style.cssText = 'font-weight:600;margin-bottom:8px;font-size:13px;';
   title.textContent = steps.title;
   card.appendChild(title);
+
   const ol = document.createElement('ol');
   ol.style.cssText = 'margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;';
   steps.items.forEach((item) => {
     const li = document.createElement('li');
-    li.style.cssText = 'font-size:12.5px;color:#475569;line-height:1.45;';
+    li.style.cssText = 'font-size:12px;color:#475569;line-height:1.45;';
     li.textContent = item;
     ol.appendChild(li);
   });
   card.appendChild(ol);
+
   messagesEl.appendChild(card);
   messagesEl.scrollTop = messagesEl.scrollHeight;
   return card;

@@ -5,7 +5,7 @@ import { prisma } from '../lib/prisma';
 import { PLANS, planFromPriceId } from '../lib/plans';
 import { authenticateJWT } from '../middleware/auth';
 import { AuthenticatedRequest } from '../types';
-import { getMonthlyUsage } from '../middleware/rateLimit';
+import { getMonthlyUsage, getMtuUsage } from '../middleware/rateLimit';
 
 const router = Router();
 
@@ -25,15 +25,28 @@ router.get('/status', authenticateJWT, async (req: AuthenticatedRequest, res: Re
     },
   });
 
-  const used = await getMonthlyUsage(organizationId);
   const plan = PLANS[org.planType] ?? PLANS.free;
+
+  const [messagesUsed, mtuUsed, agentsUsed] = await Promise.all([
+    getMonthlyUsage(organizationId),
+    getMtuUsage(organizationId),
+    prisma.onboardingFlow.count({ where: { organizationId } }),
+  ]);
 
   res.json({
     plan: org.planType,
     planName: plan.name,
     price: plan.price,
+    features: plan.features,
+    // Messages
     monthlyMessageLimit: org.monthlyMessageLimit,
-    messagesUsedThisMonth: used,
+    messagesUsedThisMonth: messagesUsed,
+    // MTU
+    mtuLimit: plan.mtuLimit,        // 0 = unlimited
+    mtuUsed,
+    // Agents
+    agentLimit: plan.agentLimit,    // 0 = unlimited
+    agentsUsed,
     subscriptionStatus: org.subscriptionStatus,
     currentPeriodEnd: org.currentPeriodEnd,
     hasStripeCustomer: !!org.stripeCustomerId,
@@ -42,6 +55,9 @@ router.get('/status', authenticateJWT, async (req: AuthenticatedRequest, res: Re
       name: p.name,
       price: p.price,
       limit: p.monthlyMessageLimit,
+      agentLimit: p.agentLimit,
+      mtuLimit: p.mtuLimit,
+      features: p.features,
       current: key === org.planType,
     })),
   });

@@ -2,7 +2,9 @@ import { Router, Response } from 'express';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { authenticateApiKey } from '../middleware/auth';
-import { runAgentSafe } from '../services/agent';
+import { getMtuUsage } from '../middleware/rateLimit';
+import { PLANS } from '../lib/plans';
+import { runAgentSafe, runAgentStream } from '../services/agent';
 import { detectIntent } from '../services/intent';
 
 import { getUserHistory } from '../services/userhistory';
@@ -134,7 +136,36 @@ router.post('/start', async (req: AuthenticatedRequest, res: Response) => {
     return;
   }
 
-  const endUser = await getOrCreateEndUser(req.organization!.id, userId, metadata ?? {});
+  // ── MTU limit check ──────────────────────────────────────────────────────────
+  const org = req.organization!;
+  const plan = PLANS[org.planType] ?? PLANS.free;
+  if (plan.mtuLimit > 0) {
+    // Check if this is a new user for this month
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+
+    const existing = await prisma.endUser.findUnique({
+      where: { organizationId_externalId: { organizationId: org.id, externalId: userId } },
+      select: { lastSeenAt: true },
+    });
+
+    const isNewThisMonth = !existing || existing.lastSeenAt < monthStart;
+    if (isNewThisMonth) {
+      const mtuUsed = await getMtuUsage(org.id);
+      if (mtuUsed >= plan.mtuLimit) {
+        res.status(429).json({
+          error: 'Monthly Tracked User limit reached',
+          limit: plan.mtuLimit,
+          used: mtuUsed,
+          upgradeUrl: `${process.env.FRONTEND_URL ?? 'http://localhost:3000'}/settings/billing`,
+        });
+        return;
+      }
+    }
+  }
+
+  const endUser = await getOrCreateEndUser(org.id, userId, metadata ?? {});
 
   // find the org's active flow
   const baseFlow = await prisma.onboardingFlow.findFirst({
@@ -285,123 +316,140 @@ router.post('/start', async (req: AuthenticatedRequest, res: Response) => {
   });
 });
 
-// ─── POST /api/v1/session/act ─────────────────────────────────────────────────
-// The AI agent processes the user's message in the context of the current step
-// and returns an action (ask question, do action, complete step, celebrate)
-router.post('/act', async (req: AuthenticatedRequest, res: Response) => {
-  const { sessionId, userMessage, pageContext, testMode } = req.body as {
-    sessionId: string;
-    userMessage: string;
-    pageContext?: import('../services/agent').PageContext;
-    testMode?: boolean;
+// ─── Guard: prevent premature complete_step ───────────────────────────────────
+// If the agent returns complete_step but required smart questions are still
+// unanswered, override with ask_clarification for the first missing question.
+function guardCompleteStep(
+  action: import('../services/agent').AgentAction,
+  step: { smartQuestions: unknown },
+  collectedData: Record<string, unknown>,
+): import('../services/agent').AgentAction {
+  if (action.type !== 'complete_step') return action;
+
+  const questions = (step.smartQuestions as string[]) ?? [];
+  const unanswered = questions.filter((q) => !(q in collectedData) || collectedData[q] === '');
+
+  if (unanswered.length === 0) return action; // all answered — allow completion
+
+  return {
+    type: 'ask_clarification',
+    question: unanswered[0],
+    options: undefined,
   };
+}
 
-  if (!sessionId || !userMessage) {
-    res.status(400).json({ error: 'sessionId and userMessage required' });
-    return;
-  }
-
-  // ── Test mode: run agent against preview session, skip all DB writes ─────
-  if (testMode || sessionId === 'preview') {
-    const previewFlow = await prisma.onboardingFlow.findFirst({
-      where: { organizationId: req.organization!.id, isActive: true },
-      include: { steps: { orderBy: { order: 'asc' } } },
-    });
-    if (!previewFlow || previewFlow.steps.length === 0) {
-      res.status(400).json({ error: 'No active flow' });
-      return;
-    }
-    const step = previewFlow.steps[0];
-    const action = await runAgentSafe({
-      org: req.organization!,
-      step,
-      userMessage,
-      collectedData: {},
-      conversationHistory: [],
-      isLastStep: previewFlow.steps.length === 1,
-      pageContext,
-      sessionId: 'preview',
-    });
-    res.json({ action, testMode: true });
-    return;
-  }
-
-  const session = await prisma.userOnboardingSession.findFirstOrThrow({
-    where: { id: sessionId, organizationId: req.organization!.id },
-    include: {
-      flow: { include: { steps: { orderBy: { order: 'asc' } } } },
-      stepProgress: true,
-    },
-  });
-
-  if (session.status === 'completed') {
-    res.status(400).json({ error: 'Session already completed' });
-    return;
-  }
-
-  const currentStep = session.flow.steps.find((s) => s.id === session.currentStepId);
-  if (!currentStep) {
-    res.status(400).json({ error: 'No current step found' });
-    return;
-  }
-
-  const isLastStep =
-    currentStep.order === Math.max(...session.flow.steps.map((s) => s.order));
-
-  // load recent conversation for context (last 6 from this session's step)
-  const recentMessages = await prisma.message.findMany({
-    where: {
-      conversation: {
-        endUserId: session.endUserId,
-        organizationId: req.organization!.id,
+// ─── Shared helper: load session context (parallelised DB reads) ───────────────
+async function loadSessionContext(sessionId: string, orgId: string) {
+  const [session, sessionMessages] = await Promise.all([
+    prisma.userOnboardingSession.findFirstOrThrow({
+      where: { id: sessionId, organizationId: orgId },
+      include: {
+        flow: { include: { steps: { orderBy: { order: 'asc' } } } },
+        stepProgress: true,
+        endUser: { select: { id: true, externalId: true, metadata: true } },
       },
-    },
-    orderBy: { createdAt: 'desc' },
-    take: 6,
-  });
-  const conversationHistory = recentMessages
+    }),
+    prisma.sessionMessage.findMany({
+      where: { sessionId },
+      orderBy: { createdAt: 'desc' },
+      take: 20, // last 20 stored turns → up to 10 exchanges
+    }),
+  ]);
+
+  const conversationHistory = sessionMessages
     .reverse()
+    .filter((m) => m.role === 'user' || m.role === 'assistant')
     .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
-  // Fetch user history for returning-user context (non-blocking on failure)
-  const userHistory = await getUserHistory(session.endUserId, session.id).catch(() => null);
+  return { session, conversationHistory };
+}
 
-  // run the agent
-  const action = await runAgentSafe({
-    org: req.organization!,
-    step: currentStep,
-    userMessage,
-    collectedData: session.collectedData as Record<string, unknown>,
-    conversationHistory,
-    isLastStep,
-    pageContext,
-    userHistoryFormatted: userHistory?.formatted,
-    sessionId: session.id,
-  });
+// ─── Shared helper: apply action side-effects and store messages ───────────────
+// Returns the assistant SessionMessage id (null for internal messages)
+async function applyActionSideEffects(opts: {
+  action: import('../services/agent').AgentAction;
+  session: Awaited<ReturnType<typeof loadSessionContext>>['session'];
+  currentStep: { id: string; order: number; aiPrompt: string };
+  userMessage: string;
+  conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>;
+  orgId: string;
+}): Promise<string | null> {
+  const { action, session, currentStep, userMessage, orgId } = opts;
 
-  // ─── Handle side effects of the action ───────────────────────────────────
+  const isInternalMessage = userMessage === '__init__' || userMessage === '__verify__';
 
-  if (action.type === 'complete_step') {
-    // merge collected data
+  // ── Store messages (skip internal triggers) — return assistant message id ─
+  let assistantMessageId: string | null = null;
+  if (!isInternalMessage) {
+    const agentContent =
+      action.type === 'execute_page_action' ? action.message :
+      action.type === 'ask_clarification'   ? action.question :
+      action.type === 'complete_step'        ? action.message :
+      action.type === 'celebrate_milestone'  ? action.headline :
+      action.type === 'escalate_to_human'    ? action.message :
+      action.type === 'chat'                 ? action.content :
+      '';
+
+    await prisma.sessionMessage.create({
+      data: {
+        sessionId: session.id,
+        stepId: currentStep.id,
+        role: 'user',
+        content: userMessage,
+      },
+    });
+
+    const assistantMsg = await prisma.sessionMessage.create({
+      data: {
+        sessionId: session.id,
+        stepId: currentStep.id,
+        role: 'assistant',
+        content: agentContent,
+        actionType: action.type,
+      },
+    });
+    assistantMessageId = assistantMsg.id;
+
+    // ── Audit log — fire-and-forget, never block the response ──────────────
+    const auditPayload: Record<string, unknown> = { message: agentContent };
+    if (action.type === 'execute_page_action') {
+      auditPayload.actionType = action.actionType;
+      auditPayload.payload    = action.payload;
+    } else if (action.type === 'ask_clarification') {
+      auditPayload.options = action.options;
+    } else if (action.type === 'complete_step') {
+      auditPayload.collectedData = action.collectedData;
+    }
+    prisma.auditLog.create({
+      data: {
+        organizationId: orgId,
+        sessionId: session.id,
+        endUserId: session.endUserId,
+        stepId: currentStep.id,
+        actionType: action.type === 'execute_page_action' ? action.actionType : action.type,
+        payload: auditPayload as Prisma.InputJsonValue,
+      },
+    }).catch(() => {}); // non-blocking
+  }
+
+  // ── Step progress + session state ─────────────────────────────────────────
+  if (action.type === 'complete_step' || action.type === 'celebrate_milestone') {
     const newData = {
       ...(session.collectedData as Record<string, unknown>),
-      ...(action.collectedData ?? {}),
+      ...(action.type === 'complete_step' ? (action.collectedData ?? {}) : {}),
     };
 
-    // find next step
-    const currentOrder = currentStep.order;
-    const nextStep = session.flow.steps.find((s) => s.order > currentOrder);
+    const nextStep = session.flow.steps.find((s) => s.order > currentStep.order);
 
-    // count how many messages were exchanged on this step (intelligence pipeline)
     const existing = await prisma.userStepProgress.findUnique({
       where: { sessionId_stepId: { sessionId: session.id, stepId: currentStep.id } },
       select: { startedAt: true, attempts: true },
     });
-    const timeSpentMs = existing?.startedAt
-      ? Date.now() - existing.startedAt.getTime()
-      : 0;
+    const timeSpentMs = existing?.startedAt ? Date.now() - existing.startedAt.getTime() : 0;
+    const msgCount = await prisma.sessionMessage.count({
+      where: { sessionId: session.id, stepId: currentStep.id, role: 'user' },
+    });
 
-    // upsert step progress — capture intelligence fields
     await prisma.userStepProgress.upsert({
       where: { sessionId_stepId: { sessionId: session.id, stepId: currentStep.id } },
       create: {
@@ -412,7 +460,7 @@ router.post('/act', async (req: AuthenticatedRequest, res: Response) => {
         completedAt: new Date(),
         aiAssisted: true,
         timeSpentMs,
-        messagesCount: (existing?.attempts ?? 0) + 1,
+        messagesCount: msgCount,
         promptSnapshot: currentStep.aiPrompt || null,
         outcome: 'completed',
       },
@@ -421,13 +469,18 @@ router.post('/act', async (req: AuthenticatedRequest, res: Response) => {
         completedAt: new Date(),
         aiAssisted: true,
         timeSpentMs,
-        messagesCount: (existing?.attempts ?? 0) + 1,
+        messagesCount: msgCount,
         promptSnapshot: currentStep.aiPrompt || null,
         outcome: 'completed',
       },
     });
 
-    if (nextStep) {
+    if (action.type === 'celebrate_milestone') {
+      await prisma.userOnboardingSession.update({
+        where: { id: session.id },
+        data: { firstValueAt: new Date(), lastActiveAt: new Date() },
+      });
+    } else if (nextStep) {
       await prisma.userOnboardingSession.update({
         where: { id: session.id },
         data: {
@@ -437,7 +490,6 @@ router.post('/act', async (req: AuthenticatedRequest, res: Response) => {
         },
       });
     } else {
-      // all done
       await prisma.userOnboardingSession.update({
         where: { id: session.id },
         data: {
@@ -449,34 +501,18 @@ router.post('/act', async (req: AuthenticatedRequest, res: Response) => {
       });
     }
 
-    {
-    }
-  } else if (action.type === 'celebrate_milestone') {
-    await prisma.userOnboardingSession.update({
-      where: { id: session.id },
-      data: {
-        firstValueAt: new Date(),
-        lastActiveAt: new Date(),
-      },
-    });
   } else if (action.type === 'escalate_to_human') {
-    // Create ticket + notify team (non-blocking)
-    const endUser = await prisma.endUser.findUnique({
-      where: { id: session.endUserId },
-      select: { externalId: true, metadata: true },
-    });
-
     const context = {
-      userId: endUser?.externalId ?? null,
-      userMetadata: (endUser?.metadata ?? {}) as Record<string, unknown>,
+      userId: session.endUser.externalId ?? null,
+      userMetadata: (session.endUser.metadata ?? {}) as Record<string, unknown>,
       flowName: session.flow.name,
-      stepTitle: currentStep.title,
+      stepTitle: (currentStep as { id: string; order: number; aiPrompt: string; title?: string }).title ?? '',
       collectedData: session.collectedData as Record<string, unknown>,
-      recentMessages: conversationHistory.slice(-6),
+      recentMessages: opts.conversationHistory.slice(-6),
     };
 
     createEscalationTicket({
-      organizationId: req.organization!.id,
+      organizationId: orgId,
       endUserId: session.endUserId,
       sessionId: session.id,
       stepId: currentStep.id,
@@ -486,8 +522,8 @@ router.post('/act', async (req: AuthenticatedRequest, res: Response) => {
       context,
     }).then((ticket) =>
       notifyTeam({
-        orgId: req.organization!.id,
-        orgName: req.organization!.name,
+        orgId,
+        orgName: session.flow.name,
         ticketId: ticket.id,
         context,
         reason: action.reason,
@@ -498,9 +534,9 @@ router.post('/act', async (req: AuthenticatedRequest, res: Response) => {
       where: { id: session.id },
       data: { lastActiveAt: new Date() },
     });
+
   } else {
-    // mark step in_progress + bump last active
-    // look up existing record first so we preserve the original startedAt
+    // in_progress — preserve original startedAt
     const existing = await prisma.userStepProgress.findUnique({
       where: { sessionId_stepId: { sessionId: session.id, stepId: currentStep.id } },
       select: { startedAt: true },
@@ -526,7 +562,378 @@ router.post('/act', async (req: AuthenticatedRequest, res: Response) => {
     });
   }
 
-  res.json({ action });
+  return assistantMessageId;
+}
+
+// ─── POST /api/v1/session/heal ───────────────────────────────────────────────
+// Widget reports whenever the self-healing resolver had to fall back (or fail).
+// Writes to selector_heal_logs and fires the org's alert webhook after 3+
+// failures for the same selector within 24 h.
+router.post('/heal', async (req: AuthenticatedRequest, res: Response) => {
+  const { sessionId, stepId, originalSelector, usedSelector, strategy, actionType, page } =
+    req.body as {
+      sessionId?: string;
+      stepId?: string;
+      originalSelector: string;
+      usedSelector?: string;
+      strategy: string;
+      actionType?: string;
+      page: string;
+    };
+
+  if (!originalSelector || !strategy || !page) {
+    res.status(400).json({ error: 'originalSelector, strategy, and page are required' });
+    return;
+  }
+
+  const org = req.organization!;
+
+  await prisma.selectorHealLog.create({
+    data: {
+      organizationId: org.id,
+      sessionId:        sessionId  ?? null,
+      stepId:           stepId     ?? null,
+      originalSelector,
+      usedSelector:     usedSelector ?? null,
+      strategy,
+      actionType:       actionType ?? null,
+      page,
+    },
+  });
+
+  // ── Webhook alert on repeated failures ─────────────────────────────────────
+  if (strategy === 'failed' && org.selectorAlertEnabled && org.selectorAlertWebhook) {
+    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const recentFailures = await prisma.selectorHealLog.count({
+      where: {
+        organizationId: org.id,
+        originalSelector,
+        strategy: 'failed',
+        createdAt: { gte: since24h },
+      },
+    });
+
+    // Alert threshold: 3 failures in 24 h — avoids noise on one-off misses
+    if (recentFailures >= 3) {
+      fetch(org.selectorAlertWebhook, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: `⚠️ Broken selector: \`${originalSelector}\` has failed ${recentFailures}× in the last 24 h on \`${page}\`. Update the step's actionConfig selector.`,
+          selector: originalSelector,
+          page,
+          failures: recentFailures,
+          stepId: stepId ?? null,
+        }),
+      }).catch(() => {}); // non-blocking — never interrupt the flow
+    }
+  }
+
+  res.json({ logged: true });
+});
+
+// ─── POST /api/v1/session/feedback ───────────────────────────────────────────
+// Widget sends thumbs up (1) or thumbs down (-1) for an assistant message.
+router.post('/feedback', async (req: AuthenticatedRequest, res: Response) => {
+  const { messageId, value } = req.body as { messageId: string; value: number };
+
+  if (!messageId || (value !== 1 && value !== -1)) {
+    res.status(400).json({ error: 'messageId and value (1 or -1) required' });
+    return;
+  }
+
+  // Verify the message belongs to a session in this org
+  const msg = await prisma.sessionMessage.findFirst({
+    where: {
+      id: messageId,
+      session: { organizationId: req.organization!.id },
+    },
+    select: { id: true },
+  });
+
+  if (!msg) {
+    res.status(404).json({ error: 'Message not found' });
+    return;
+  }
+
+  await prisma.sessionMessage.update({
+    where: { id: messageId },
+    data: { feedback: value },
+  });
+
+  res.json({ saved: true });
+});
+
+// ─── POST /api/v1/session/act ─────────────────────────────────────────────────
+router.post('/act', async (req: AuthenticatedRequest, res: Response) => {
+  const { sessionId, userMessage, pageContext, testMode } = req.body as {
+    sessionId: string;
+    userMessage: string;
+    pageContext?: import('../services/agent').PageContext;
+    testMode?: boolean;
+  };
+
+  if (!sessionId || !userMessage) {
+    res.status(400).json({ error: 'sessionId and userMessage required' });
+    return;
+  }
+  if (userMessage.length > 2000) {
+    res.status(400).json({ error: 'userMessage too long (max 2000 characters)' });
+    return;
+  }
+
+  // ── Test / preview mode ───────────────────────────────────────────────────
+  if (testMode || sessionId === 'preview') {
+    const previewFlow = await prisma.onboardingFlow.findFirst({
+      where: { organizationId: req.organization!.id, isActive: true },
+      include: { steps: { orderBy: { order: 'asc' } } },
+    });
+    if (!previewFlow || previewFlow.steps.length === 0) {
+      res.status(400).json({ error: 'No active flow' });
+      return;
+    }
+    const step = previewFlow.steps[0];
+    const action = await runAgentSafe({
+      org: req.organization!,
+      step,
+      userMessage,
+      collectedData: {},
+      conversationHistory: [],
+      isLastStep: previewFlow.steps.length === 1,
+      pageContext,
+      sessionId: 'preview',
+    });
+    res.json({ action, testMode: true });
+    return;
+  }
+
+  const { session, conversationHistory } = await loadSessionContext(sessionId, req.organization!.id);
+
+  if (session.status === 'completed') {
+    res.status(400).json({ error: 'Session already completed' });
+    return;
+  }
+
+  const currentStep = session.flow.steps.find((s) => s.id === session.currentStepId);
+  if (!currentStep) {
+    res.status(400).json({ error: 'No current step found' });
+    return;
+  }
+
+  const isLastStep = currentStep.order === Math.max(...session.flow.steps.map((s) => s.order));
+
+  // Fetch user history (non-blocking)
+  const userHistory = await getUserHistory(session.endUserId, session.id).catch(() => null);
+
+  const action = await runAgentSafe({
+    org: req.organization!,
+    step: currentStep,
+    userMessage,
+    collectedData: session.collectedData as Record<string, unknown>,
+    conversationHistory,
+    isLastStep,
+    pageContext,
+    userHistoryFormatted: userHistory?.formatted,
+    userMetadata: (session.endUser.metadata ?? {}) as Record<string, unknown>,
+    sessionId: session.id,
+  });
+
+  // ── Guard: block premature complete_step ─────────────────────────────────
+  const guardedAction = guardCompleteStep(action, currentStep, session.collectedData as Record<string, unknown>);
+
+  const messageId = await applyActionSideEffects({
+    action: guardedAction,
+    session,
+    currentStep,
+    userMessage,
+    conversationHistory,
+    orgId: req.organization!.id,
+  });
+
+  res.json({ action: guardedAction, messageId });
+});
+
+// ─── In-memory rate limiter (per session, not per IP) ────────────────────────
+// Caps at 30 agent calls per 60-second window. Resets automatically.
+const actRateLimit = new Map<string, { count: number; windowStart: number }>();
+const ACT_MAX    = 30;
+const ACT_WINDOW = 60_000; // 1 minute
+
+function checkActRateLimit(sessionId: string): boolean {
+  const now   = Date.now();
+  const entry = actRateLimit.get(sessionId);
+
+  if (!entry || now - entry.windowStart > ACT_WINDOW) {
+    actRateLimit.set(sessionId, { count: 1, windowStart: now });
+    return true; // within limit
+  }
+
+  if (entry.count >= ACT_MAX) return false; // exceeded
+
+  entry.count++;
+  return true;
+}
+
+// Purge stale entries every 5 minutes to prevent memory growth
+setInterval(() => {
+  const cutoff = Date.now() - ACT_WINDOW * 2;
+  for (const [id, entry] of actRateLimit.entries()) {
+    if (entry.windowStart < cutoff) actRateLimit.delete(id);
+  }
+}, 5 * 60_000);
+
+// ─── POST /api/v1/session/act/stream — SSE streaming variant ─────────────────
+// Sends a `thinking` event immediately on connect so the widget shows a typing
+// indicator. Sends the `action` event when the agent finishes. Closes with `done`.
+router.post('/act/stream', async (req: AuthenticatedRequest, res: Response) => {
+  const { sessionId, userMessage, pageContext } = req.body as {
+    sessionId: string;
+    userMessage: string;
+    pageContext?: import('../services/agent').PageContext;
+  };
+
+  if (!sessionId || !userMessage) {
+    res.status(400).json({ error: 'sessionId and userMessage required' });
+    return;
+  }
+  if (userMessage.length > 2000) {
+    res.status(400).json({ error: 'userMessage too long (max 2000 characters)' });
+    return;
+  }
+
+  // ── Rate limit check ──────────────────────────────────────────────────────
+  if (!checkActRateLimit(sessionId)) {
+    res.status(429).json({ error: 'Too many requests. Please slow down.' });
+    return;
+  }
+
+  // ── Set SSE headers immediately — this is what eliminates perceived latency ─
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // disable nginx buffering
+
+  const send = (event: string, data: unknown) => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  // Acknowledge immediately — widget shows typing indicator
+  send('thinking', { ts: Date.now() });
+
+  try {
+    const { session, conversationHistory } = await loadSessionContext(sessionId, req.organization!.id);
+
+    if (session.status === 'completed') {
+      send('error', { message: 'Session already completed' });
+      res.end();
+      return;
+    }
+
+    const currentStep = session.flow.steps.find((s) => s.id === session.currentStepId);
+    if (!currentStep) {
+      send('error', { message: 'No current step' });
+      res.end();
+      return;
+    }
+
+    // ── Real GPT-4o streaming ─────────────────────────────────────────────────
+    // runAgentStream yields { type:'word' } tokens as arguments build in GPT-4o,
+    // then a final { type:'action' } when the tool call is complete.
+    // Words are sent immediately — no artificial delay.
+    const isLastStep  = currentStep.order === Math.max(...session.flow.steps.map((s) => s.order));
+    const userHistory = await getUserHistory(session.endUserId, session.id).catch(() => null);
+
+    let finalAction: import('../services/agent').AgentAction | null = null;
+
+    for await (const event of runAgentStream({
+      org: req.organization!,
+      step: currentStep,
+      userMessage,
+      collectedData: session.collectedData as Record<string, unknown>,
+      conversationHistory,
+      isLastStep,
+      pageContext,
+      userHistoryFormatted: userHistory?.formatted,
+      userMetadata: (session.endUser.metadata ?? {}) as Record<string, unknown>,
+    })) {
+      if (event.type === 'word') {
+        send('text', { word: event.word });
+      } else {
+        finalAction = event.action;
+      }
+    }
+
+    if (!finalAction) {
+      send('error', { message: 'Agent returned no action' });
+      res.end();
+      return;
+    }
+
+    const guardedAction = guardCompleteStep(finalAction, currentStep, session.collectedData as Record<string, unknown>);
+
+    const messageId = await applyActionSideEffects({
+      action: guardedAction,
+      session,
+      currentStep,
+      userMessage,
+      conversationHistory,
+      orgId: req.organization!.id,
+    });
+
+    send('action', { action: guardedAction, messageId });
+    send('done', {});
+  } catch (err) {
+    send('error', { message: err instanceof Error ? err.message : 'Agent error' });
+  } finally {
+    res.end();
+  }
+});
+
+// ─── POST /api/v1/session/page-change ────────────────────────────────────────
+// Widget sends this on every SPA navigation. Re-runs intent detection and
+// advances the session's currentStep if the new page matches a later step.
+router.post('/page-change', async (req: AuthenticatedRequest, res: Response) => {
+  const { sessionId, page } = req.body as { sessionId: string; page: string };
+  if (!sessionId || !page) {
+    res.status(400).json({ error: 'sessionId and page required' });
+    return;
+  }
+
+  const session = await prisma.userOnboardingSession.findFirst({
+    where: { id: sessionId, organizationId: req.organization!.id, status: 'active' },
+    include: { flow: { include: { steps: { orderBy: { order: 'asc' } } } } },
+  });
+
+  if (!session) {
+    res.json({ advanced: false });
+    return;
+  }
+
+  const currentStep = session.flow.steps.find((s) => s.id === session.currentStepId);
+  if (!currentStep) {
+    res.json({ advanced: false });
+    return;
+  }
+
+  const detectedStepId = await detectIntent(page, 'page_view', session.flow.steps).catch(() => null);
+  if (!detectedStepId || detectedStepId === session.currentStepId) {
+    res.json({ advanced: false });
+    return;
+  }
+
+  const detectedStep = session.flow.steps.find((s) => s.id === detectedStepId);
+  // Only advance, never go backwards
+  if (!detectedStep || detectedStep.order <= currentStep.order) {
+    res.json({ advanced: false });
+    return;
+  }
+
+  await prisma.userOnboardingSession.update({
+    where: { id: session.id },
+    data: { currentStepId: detectedStepId, lastActiveAt: new Date() },
+  });
+
+  res.json({ advanced: true, newStepId: detectedStepId, newStepTitle: detectedStep.title });
 });
 
 // ─── POST /api/v1/session/event ───────────────────────────────────────────────

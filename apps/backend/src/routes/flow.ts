@@ -2,6 +2,7 @@ import { Router, Response } from 'express';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { authenticateJWT } from '../middleware/auth';
+import { checkAgentLimit } from '../middleware/rateLimit';
 import { AuthenticatedRequest } from '../types';
 import { FLOW_TEMPLATES } from '../lib/templates';
 
@@ -28,6 +29,12 @@ router.post('/from-template', async (req: AuthenticatedRequest, res: Response) =
   }
 
   const orgId = req.user!.organizationId;
+
+  const limitErr = await checkAgentLimit(orgId);
+  if (limitErr) {
+    res.status(403).json({ error: limitErr, code: 'AGENT_LIMIT_REACHED' });
+    return;
+  }
 
   const flow = await prisma.onboardingFlow.create({
     data: {
@@ -78,6 +85,13 @@ router.get('/:id', async (req: AuthenticatedRequest, res: Response) => {
 // ─── POST /api/v1/flow — create flow ─────────────────────────────────────────
 router.post('/', async (req: AuthenticatedRequest, res: Response) => {
   const { name, description } = req.body as { name: string; description?: string };
+
+  const limitErr = await checkAgentLimit(req.user!.organizationId);
+  if (limitErr) {
+    res.status(403).json({ error: limitErr, code: 'AGENT_LIMIT_REACHED' });
+    return;
+  }
+
   const flow = await prisma.onboardingFlow.create({
     data: { organizationId: req.user!.organizationId, name, description: description ?? '' },
     include: { steps: true },
@@ -111,8 +125,23 @@ router.put('/:id', async (req: AuthenticatedRequest, res: Response) => {
 
 // ─── DELETE /api/v1/flow/:id ──────────────────────────────────────────────────
 router.delete('/:id', async (req: AuthenticatedRequest, res: Response) => {
+  const orgId = req.user!.organizationId;
+
+  // Block deletion if users are actively mid-flow — mark inactive first
+  const activeSessions = await prisma.userOnboardingSession.count({
+    where: { flowId: req.params.id, organizationId: orgId, status: 'active' },
+  });
+
+  if (activeSessions > 0) {
+    res.status(409).json({
+      error: `Cannot delete: ${activeSessions} active session(s) in progress. Deactivate the flow first, then delete once sessions have completed or timed out.`,
+      activeSessions,
+    });
+    return;
+  }
+
   await prisma.onboardingFlow.deleteMany({
-    where: { id: req.params.id, organizationId: req.user!.organizationId },
+    where: { id: req.params.id, organizationId: orgId },
   });
   res.json({ deleted: true });
 });

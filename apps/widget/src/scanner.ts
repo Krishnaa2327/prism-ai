@@ -23,8 +23,8 @@ export interface ScannedElement {
   rect: { x: number; y: number; w: number; h: number }; // viewport position
 }
 
-// Backward-compatible alias used by PageContext and the backend
-export type PageElement = Pick<ScannedElement, 'tag' | 'selector' | 'text' | 'type'>;
+// PageElement includes value so the agent can verify fills
+export type PageElement = Pick<ScannedElement, 'tag' | 'selector' | 'text' | 'type'> & { value?: string };
 
 export interface PageContext {
   url: string;
@@ -131,11 +131,24 @@ export function scanPage(): PageContext {
     push(fingerprint(el, 'button', text));
   });
 
-  // Inputs / textareas / selects
+  // Inputs / textareas / selects — sensitive fields are excluded from the
+  // page context sent to the AI (password, credit card, CVV, etc.)
+  const SENSITIVE_AUTOCOMPLETE = new Set([
+    'current-password', 'new-password', 'cc-number', 'cc-csc',
+    'cc-exp', 'cc-exp-month', 'cc-exp-year', 'cc-name',
+  ]);
   document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(
-    'input:not([type="hidden"]):not([disabled]), textarea:not([disabled]), select:not([disabled])'
+    'input:not([type="hidden"]):not([type="password"]):not([disabled]), textarea:not([disabled]), select:not([disabled])'
   ).forEach((el) => {
     if (el.closest('#oai-root')) return;
+    // Skip sensitive autocomplete hints (credit card, passwords)
+    const ac = el.getAttribute('autocomplete') ?? '';
+    if (SENSITIVE_AUTOCOMPLETE.has(ac)) return;
+    // Skip any field whose name/id looks like a password field
+    const nameAttr = (el.getAttribute('name') ?? '').toLowerCase();
+    const idAttr   = (el.getAttribute('id')   ?? '').toLowerCase();
+    if (nameAttr.includes('password') || idAttr.includes('password')) return;
+
     const text =
       labelFor(el) ||
       el.getAttribute('placeholder') ||
@@ -165,7 +178,11 @@ export function scanPage(): PageContext {
     url: window.location.pathname,
     title: document.title,
     headings,
-    // Send lean PageElement objects to the AI (no rect/classes — keeps prompt small)
-    elements: elements.slice(0, 50).map(({ tag, selector, text, type }) => ({ tag, selector, text, type })),
+    // Include current field value so the agent can verify fills during __verify__ turns
+    elements: elements.slice(0, 50).map(({ tag, selector, text, type }) => {
+      const el = document.querySelector(selector) as HTMLInputElement | null;
+      const value = (el && (el as HTMLInputElement).value) ? (el as HTMLInputElement).value : undefined;
+      return { tag, selector, text, type, ...(value ? { value } : {}) };
+    }),
   };
 }

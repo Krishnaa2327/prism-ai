@@ -5,6 +5,13 @@ import { api, OnboardingFlow, OnboardingStep } from '@/lib/api';
 
 const ACTION_TYPES = ['none', 'fill_form', 'click', 'navigate', 'highlight'];
 
+const ACTION_TYPE_LABELS: Record<string, string> = {
+  fill_form: 'Fill form',
+  click:     'Click',
+  navigate:  'Navigate',
+  highlight: 'Highlight',
+};
+
 const BLANK_STEP: Omit<OnboardingStep, 'id' | 'flowId' | 'createdAt'> = {
   title: '',
   intent: '',
@@ -13,6 +20,7 @@ const BLANK_STEP: Omit<OnboardingStep, 'id' | 'flowId' | 'createdAt'> = {
   smartQuestions: [],
   actionType: null,
   actionConfig: {},
+  allowedActions: [],
   completionEvent: '',
   isMilestone: false,
   order: 0,
@@ -328,6 +336,48 @@ function StepForm({
             <span className="text-sm text-slate-700">First value milestone</span>
           </label>
         </div>
+      </div>
+
+      {/* Guardrails — allowed AI action types */}
+      <div>
+        <label className="text-xs font-medium text-slate-500 block mb-1">
+          Guardrails — allowed AI actions <span className="font-normal text-slate-400">(unchecked = all allowed)</span>
+        </label>
+        <div className="flex flex-wrap gap-3">
+          {(['fill_form', 'click', 'navigate', 'highlight'] as const).map((type) => {
+            const allowed = (step.allowedActions as string[]) ?? [];
+            const isChecked = allowed.length === 0 || allowed.includes(type);
+            const isConstrained = allowed.length > 0;
+            return (
+              <label key={type} className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={isChecked}
+                  className="w-3.5 h-3.5 accent-brand-600"
+                  onChange={(e) => {
+                    const current: string[] = allowed.length === 0
+                      ? ['fill_form', 'click', 'navigate', 'highlight']
+                      : [...allowed];
+                    const next = e.target.checked
+                      ? [...new Set([...current, type])]
+                      : current.filter((t) => t !== type);
+                    // If all 4 selected, store empty (= all allowed)
+                    const allTypes = ['fill_form', 'click', 'navigate', 'highlight'];
+                    set('allowedActions', next.length === allTypes.length ? [] : next);
+                  }}
+                />
+                <span className={`text-xs ${isConstrained && !isChecked ? 'line-through text-slate-400' : 'text-slate-700'}`}>
+                  {ACTION_TYPE_LABELS[type]}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+        {((step.allowedActions as string[]) ?? []).length > 0 && (
+          <p className="text-xs text-amber-600 mt-1">
+            Restricted to: {(step.allowedActions as string[]).map((t) => ACTION_TYPE_LABELS[t] ?? t).join(', ')}
+          </p>
+        )}
       </div>
 
       <div className="flex gap-3 pt-2">

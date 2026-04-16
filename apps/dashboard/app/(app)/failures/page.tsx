@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { api } from '@/lib/api';
 
 interface FailureEntry {
@@ -69,7 +70,11 @@ export default function FailuresPage() {
           <h2 className="text-sm font-semibold text-slate-700 mb-3">Dropped Off</h2>
           <div className="space-y-2">
             {failures.map((f) => (
-              <div key={f.sessionId} className="bg-white border border-slate-200 rounded-xl px-5 py-4 flex items-center gap-4">
+              <Link
+                key={f.sessionId}
+                href={`/sessions/${f.sessionId}`}
+                className="bg-white border border-slate-200 rounded-xl px-5 py-4 flex items-center gap-4 hover:border-brand-300 hover:shadow-sm transition-all"
+              >
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium text-slate-800 truncate">{f.userId}</span>
@@ -87,14 +92,15 @@ export default function FailuresPage() {
                     <span className="text-xs text-slate-400">({f.completedSteps}/{f.totalSteps} steps)</span>
                   </div>
                 </div>
-                <div className="text-right shrink-0">
+                <div className="text-right shrink-0 flex items-center gap-3">
                   <span className="text-xs text-slate-400">
                     {f.lastActiveMinutesAgo < 60
                       ? `${f.lastActiveMinutesAgo}m ago`
                       : `${Math.floor(f.lastActiveMinutesAgo / 60)}h ago`}
                   </span>
+                  <span className="text-xs text-brand-600 font-medium">View →</span>
                 </div>
-              </div>
+              </Link>
             ))}
           </div>
         </div>

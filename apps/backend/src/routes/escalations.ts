@@ -89,8 +89,15 @@ router.get('/:id', async (req: AuthenticatedRequest, res: Response) => {
 });
 
 // ─── PATCH /api/v1/escalations/:id ───────────────────────────────────────────
+const VALID_TICKET_STATUSES = new Set(['open', 'in_progress', 'resolved']);
+
 router.patch('/:id', async (req: AuthenticatedRequest, res: Response) => {
   const { status, notes } = req.body as { status?: string; notes?: string };
+
+  if (status !== undefined && !VALID_TICKET_STATUSES.has(status)) {
+    res.status(400).json({ error: `Invalid status. Must be one of: ${[...VALID_TICKET_STATUSES].join(', ')}` });
+    return;
+  }
 
   const ticket = await prisma.escalationTicket.findFirst({
     where: { id: req.params.id, organizationId: req.user!.organizationId },

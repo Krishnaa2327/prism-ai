@@ -1,34 +1,36 @@
+// ─── Prism Widget — side-panel orchestrator ───────────────────────────────────
+// Prism occupies the right 360px of the screen as a persistent sidebar.
+// The host page body shifts left automatically via the `.__prism-open` class.
+// There is no floating bubble — the panel slides in from the right when an
+// active onboarding session exists, and can be collapsed to a thin tab.
+
 import { WidgetConfig, DEFAULT_CONFIG } from './config';
-import { DropOffDetector, TriggerReason } from './detector';
+import { DropOffDetector } from './detector';
 import { trackEvent } from './api';
 import { WidgetSocket } from './socket';
 import { injectStyles } from './styles';
 import { CopilotManager, AgentAction, CopilotSession } from './copilot';
-import { RecaptureWatcher, RecaptureReason } from './recapture';
 import {
-  createRoot, createBubble, createChatWindow,
-  addMessage, hideDot, tryParseSteps, addStepsCard,
+  createRoot, createSidePanel,
+  addMessage, addFeedbackButtons, tryParseSteps, addStepsCard,
   addChips, addActionToast, addCelebration, addStepPill,
   renderStepProgress, createStreamingBubble,
-  showBubbleNudge, hideBubbleNudge,
 } from './ui';
 
 export class OnboardAIWidget {
   private config: Required<Omit<WidgetConfig, 'userId' | 'metadata'>> & Pick<WidgetConfig, 'userId' | 'metadata'>;
-  private isOpen = false;
+  private isVisible = false;
+  private isCollapsed = false;
   private isSending = false;
   private detector: DropOffDetector | null = null;
   private socket: WidgetSocket | null = null;
-  // exposed so test.html can call widget.getCopilot().fireEvent(...)
   private copilot: CopilotManager;
-  private recaptureWatcher: RecaptureWatcher | null = null;
 
   // DOM refs
   private messagesEl!: HTMLElement;
   private inputEl!: HTMLTextAreaElement;
   private sendBtn!: HTMLButtonElement;
-  private windowEl!: HTMLElement;
-  private bubbleEl!: HTMLElement;
+  private panelEl!: HTMLElement;
   private progressBarEl!: HTMLElement;
   private stepTitleEl!: HTMLElement;
   private progressTextEl!: HTMLElement;
@@ -51,68 +53,53 @@ export class OnboardAIWidget {
   }
 
   private async mount() {
-    injectStyles(this.config.primaryColor, this.config.position);
+    injectStyles(this.config.primaryColor);
 
     const root = createRoot();
-    this.bubbleEl = createBubble(root);
-    this.windowEl = createChatWindow(root);
+    this.panelEl = createSidePanel(root);
 
     this.messagesEl = document.getElementById('oai-messages')!;
-    this.inputEl = document.getElementById('oai-input') as HTMLTextAreaElement;
-    this.sendBtn = document.getElementById('oai-send') as HTMLButtonElement;
+    this.inputEl    = document.getElementById('oai-input') as HTMLTextAreaElement;
+    this.sendBtn    = document.getElementById('oai-send') as HTMLButtonElement;
 
-    // Create copilot progress bar (injected into the chat window header)
     this.injectProgressBar();
-
     this.bindEvents();
     this.connectSocket();
     this.trackPageView();
     this.startDetection();
+    this.copilot.watchNavigation();
 
-    // Hide bubble until we have a session
-    this.bubbleEl.style.display = 'none';
-
-    const resuming = this.consumeResumeToken();
     const userId = this.config.userId ?? 'anonymous_' + this.getOrCreateAnonId();
 
-    // Register BEFORE start() — the cache pre-warm inside start() fires this
-    // synchronously, so the progress bar updates before any API round-trip.
+    // Register BEFORE start() so the cache pre-warm fires synchronously
     this.copilot.onSessionUpdate((s) => this.updateProgressUI(s));
 
-    // If a cached session exists, skip triggerDelay (user already started onboarding)
-    const hasCached = !!this.copilot.getCachedSession(userId);
-
-    // start() pre-warms from cache, then fetches fresh state from server
     const session = await this.copilot.start(userId, window.location.pathname, this.config.metadata ?? {});
-
-    // Use fresh session, or fall back to whatever's in copilot (cached on network failure)
     const active = session ?? this.copilot.getSession();
 
-    if (active) {
-      // Respect server-side trigger controls
-      const trigger = this.copilot.getTriggerConfig();
+    if (!active) return; // no active flow for this user
 
-      // 1. URL pattern check — skip if current page doesn't match
-      if (!this.copilot.shouldTriggerOnCurrentPage()) return;
+    // Respect server-side trigger controls
+    const trigger = this.copilot.getTriggerConfig();
 
-      // 2. Max triggers check — track show count in localStorage
-      if (trigger.maxTriggersPerUser > 0) {
-        const countKey = `_prism_tc_${this.config.apiKey.slice(0, 8)}_${userId}`;
-        const shown = parseInt(localStorage.getItem(countKey) ?? '0', 10);
-        if (shown >= trigger.maxTriggersPerUser) return;
-        localStorage.setItem(countKey, String(shown + 1));
-      }
+    if (!this.copilot.shouldTriggerOnCurrentPage()) return;
 
-      // 3. Delay — use server config, skip if returning/resuming
-      const delay = (resuming || hasCached) ? 0 : trigger.delayMs;
-      setTimeout(() => {
-        this.bubbleEl.style.display = 'flex';
-        this.openCopilot();
-      }, delay);
+    if (trigger.maxTriggersPerUser > 0) {
+      const countKey = `_prism_tc_${this.config.apiKey.slice(0, 8)}_${userId}`;
+      const shown = parseInt(localStorage.getItem(countKey) ?? '0', 10);
+      if (shown >= trigger.maxTriggersPerUser) return;
+      localStorage.setItem(countKey, String(shown + 1));
     }
+
+    // Returning users / resuming sessions open the panel instantly
+    const resuming = this.consumeResumeToken();
+    const hasCached = !!this.copilot.getCachedSession(userId);
+    const delay = (resuming || hasCached) ? 0 : trigger.delayMs;
+
+    setTimeout(() => this.openPanel(), delay);
   }
 
-  // ─── Progress bar UI ─────────────────────────────────────────────────────
+  // ─── Progress bar ────────────────────────────────────────────────────────
 
   private injectProgressBar() {
     const header = document.getElementById('oai-header');
@@ -121,23 +108,22 @@ export class OnboardAIWidget {
     const bar = document.createElement('div');
     bar.id = 'oai-progress-wrap';
     bar.innerHTML = `
-      <div id="oai-step-title" style="font-size:11px;color:#6366f1;font-weight:600;margin-bottom:4px;"></div>
-      <div style="background:#e2e8f0;border-radius:999px;height:4px;overflow:hidden;">
-        <div id="oai-progress-bar" style="height:100%;background:#6366f1;border-radius:999px;transition:width .4s ease;width:0%;"></div>
+      <div id="oai-step-title"></div>
+      <div id="oai-progress-track">
+        <div id="oai-progress-bar"></div>
       </div>
-      <div id="oai-progress-text" style="font-size:10px;color:#94a3b8;margin-top:3px;"></div>
+      <div id="oai-progress-text"></div>
     `;
-    bar.style.cssText = 'padding:8px 12px 4px;border-bottom:1px solid #f1f5f9;';
     header.insertAdjacentElement('afterend', bar);
 
-    this.progressBarEl = document.getElementById('oai-progress-bar')!;
-    this.stepTitleEl = document.getElementById('oai-step-title')!;
+    this.progressBarEl  = document.getElementById('oai-progress-bar')!;
+    this.stepTitleEl    = document.getElementById('oai-step-title')!;
     this.progressTextEl = document.getElementById('oai-progress-text')!;
   }
 
   private updateProgressUI(session: CopilotSession) {
     const { completed, total, percent } = this.copilot.getProgress();
-    if (this.progressBarEl) this.progressBarEl.style.width = `${percent}%`;
+    if (this.progressBarEl)  this.progressBarEl.style.width = `${percent}%`;
     if (this.stepTitleEl) {
       this.stepTitleEl.textContent = session.status === 'completed'
         ? 'Onboarding complete!'
@@ -147,17 +133,123 @@ export class OnboardAIWidget {
       this.progressTextEl.textContent = `${completed} of ${total} steps done`;
     }
 
-    // Render step progress stepper
     const completedIds = session.flow.steps
       .filter((_, i) => i < session.currentStep.order)
       .map((s) => s.id);
     renderStepProgress(session.flow.steps, session.currentStep.id, completedIds);
+  }
 
-    // update bubble badge
-    const badge = this.bubbleEl.querySelector<HTMLElement>('.oai-badge');
-    if (badge && session.status !== 'completed') {
-      badge.textContent = String(total - completed);
-      badge.style.display = 'flex';
+  // ─── Panel open / collapse ───────────────────────────────────────────────
+
+  private get isMobile(): boolean {
+    return window.innerWidth <= 640;
+  }
+
+  private openPanel() {
+    this.isVisible = true;
+    this.isCollapsed = false;
+    this.panelEl.classList.remove('oai-hidden', 'oai-collapsed');
+    if (!this.isMobile) {
+      document.body.classList.add('__prism-open');
+      document.body.classList.remove('__prism-collapsed');
+    }
+    this.startSession();
+  }
+
+  private collapsePanel() {
+    this.isCollapsed = true;
+    this.panelEl.classList.add('oai-collapsed');
+    if (!this.isMobile) {
+      document.body.classList.remove('__prism-open');
+      document.body.classList.add('__prism-collapsed');
+    }
+  }
+
+  private expandPanel() {
+    this.isCollapsed = false;
+    this.panelEl.classList.remove('oai-collapsed');
+    if (!this.isMobile) {
+      document.body.classList.add('__prism-open');
+      document.body.classList.remove('__prism-collapsed');
+    }
+  }
+
+  private hidePanel() {
+    this.isVisible = false;
+    this.panelEl.classList.add('oai-hidden');
+    document.body.classList.remove('__prism-open', '__prism-collapsed');
+  }
+
+  // ─── Session start message flow ──────────────────────────────────────────
+
+  private async startSession() {
+    const session = this.copilot.getSession();
+    if (!session) return;
+
+    if (session.status === 'completed') {
+      addMessage(this.messagesEl, '🎉 You\'ve completed onboarding! Great work.', 'assistant');
+      this.inputEl.disabled = true;
+      this.inputEl.placeholder = 'Onboarding complete';
+      this.sendBtn.disabled = true;
+      return;
+    }
+
+    const step = session.currentStep;
+    const { total } = this.copilot.getProgress();
+
+    addStepPill(this.messagesEl, `Step ${step.order + 1} of ${total}`);
+    addMessage(
+      this.messagesEl,
+      session.isReturning ? `Welcome back! Continuing: ${step.title}` : step.title,
+      'assistant'
+    );
+
+    // Page mismatch — offer navigation
+    if (step.targetUrl && !this.isOnTargetPage(step.targetUrl)) {
+      addMessage(
+        this.messagesEl,
+        `This step happens on a different page. Want me to take you there?`,
+        'assistant'
+      );
+      addChips(
+        this.messagesEl,
+        '',
+        [`Go to ${this.shortUrl(step.targetUrl)}`],
+        () => {
+          this.copilot.executePageAction({
+            type: 'execute_page_action',
+            actionType: 'navigate',
+            payload: { url: step.targetUrl! },
+            message: `Navigating to ${step.targetUrl}…`,
+          });
+        }
+      );
+      this.enableInput();
+      this.isSending = false;
+      this.sendBtn.disabled = false;
+      return;
+    }
+
+    // Auto-trigger agent
+    this.enableInput();
+    this.isSending = true;
+    this.sendBtn.disabled = true;
+    const streamDiv = createStreamingBubble(this.messagesEl);
+    try {
+      const result = await this.copilot.sendMessage('__init__');
+      if (result) {
+        this.handleAgentAction(result.action, streamDiv, result.messageId);
+      } else {
+        streamDiv.textContent = 'Having trouble connecting. Type a message to try again.';
+        streamDiv.classList.remove('oai-streaming');
+        this.isSending = false;
+        this.sendBtn.disabled = false;
+      }
+    } catch {
+      streamDiv.textContent = 'Connection error. Please refresh and try again.';
+      streamDiv.classList.remove('oai-streaming');
+      this.isSending = false;
+      this.sendBtn.disabled = false;
     }
   }
 
@@ -168,16 +260,17 @@ export class OnboardAIWidget {
     this.socket.connect().catch(() => {});
   }
 
-  // ─── Drop-off detection ───────────────────────────────────────────────────
+  // ─── Drop-off detection ──────────────────────────────────────────────────
+  // Even in sidebar mode, we track rage clicks / form abandonment.
+  // These signals appear in the analytics dashboard.
 
   private startDetection() {
     this.detector = new DropOffDetector(
       this.config.idleThreshold,
-      (reason, meta) => {
-        if (!this.isOpen) {
-          this.bubbleEl.style.display = 'flex';
-          this.openCopilot(reason, meta);
-        }
+      (_reason, _meta) => {
+        // In sidebar mode we don't pop anything — the panel is already visible.
+        // Just ensure it's expanded if collapsed.
+        if (this.isVisible && this.isCollapsed) this.expandPanel();
       },
       (eventType, props) => {
         const userId = this.config.userId ?? 'anonymous_' + this.getOrCreateAnonId();
@@ -187,7 +280,6 @@ export class OnboardAIWidget {
           eventType as Parameters<typeof trackEvent>[2],
           props
         );
-        // fire completion event to copilot session
         this.copilot.fireEvent(eventType);
       }
     );
@@ -204,142 +296,7 @@ export class OnboardAIWidget {
     );
   }
 
-  // ─── Copilot chat open ───────────────────────────────────────────────────
-
-  private async openCopilot(triggerReason?: string, triggerMeta?: Record<string, unknown>) {
-    this.isOpen = true;
-    this.windowEl.classList.remove('oai-hidden');
-    hideDot();
-    this.stopRecaptureWatch();
-
-    const session = this.copilot.getSession();
-
-    if (session && session.status !== 'completed') {
-      const step = session.currentStep;
-      const { total } = this.copilot.getProgress();
-
-      // Show step pill + header (welcome back for returning users)
-      addStepPill(this.messagesEl, `Step ${step.order + 1} of ${total}`);
-      const greeting = session.isReturning
-        ? `Welcome back! Continuing: ${step.title}`
-        : step.title;
-      addMessage(this.messagesEl, greeting, 'assistant');
-
-      // Page mismatch: if this step has a targetUrl and we're not on it, show navigation hint
-      if (step.targetUrl && !this.isOnTargetPage(step.targetUrl)) {
-        addMessage(
-          this.messagesEl,
-          `This step happens on a different page. Want me to take you there?`,
-          'assistant'
-        );
-        addChips(
-          this.messagesEl,
-          '',
-          [`Go to ${this.shortUrl(step.targetUrl)}`],
-          () => {
-            this.copilot.executePageAction({
-              type: 'execute_page_action',
-              actionType: 'navigate',
-              payload: { url: step.targetUrl! },
-              message: `Navigating to ${step.targetUrl}…`,
-            });
-          }
-        );
-        this.enableInput();
-        this.isSending = false;
-        this.sendBtn.disabled = false;
-        return;
-      }
-
-      // Build init message: include frustration context when available
-      const frustrationCtx = triggerReason === 'rage_click'
-        ? `__init__ [user is rage-clicking on "${triggerMeta?.target ?? 'unknown'}" — they are frustrated, acknowledge it and help immediately]`
-        : triggerReason === 'form_abandon'
-        ? `__init__ [user abandoned a form "${triggerMeta?.formId ?? ''}" without submitting — help them complete it]`
-        : triggerReason === 'idle'
-        ? `__init__ [user has been idle — check if they need help or have a question]`
-        : '__init__';
-
-      // Auto-trigger AI to act immediately — no user input required
-      this.enableInput();
-      this.isSending = true;
-      this.sendBtn.disabled = true;
-      const streamDiv = createStreamingBubble(this.messagesEl);
-      try {
-        const action = await this.copilot.sendMessage(frustrationCtx);
-        if (action) {
-          this.handleAgentAction(action, streamDiv);
-        } else {
-          streamDiv.textContent = 'Having trouble connecting. Type a message to try again.';
-          streamDiv.classList.remove('oai-streaming');
-          this.isSending = false;
-          this.sendBtn.disabled = false;
-        }
-      } catch {
-        streamDiv.textContent = 'Connection error. Please refresh and try again.';
-        streamDiv.classList.remove('oai-streaming');
-        this.isSending = false;
-        this.sendBtn.disabled = false;
-      }
-    } else if (session?.status === 'completed') {
-      addMessage(this.messagesEl, '🎉 You\'ve completed onboarding! Great work.', 'assistant');
-      this.inputEl.disabled = true;
-      this.inputEl.placeholder = 'Onboarding complete';
-      this.sendBtn.disabled = true;
-    } else {
-      addMessage(this.messagesEl, 'Hi! How can I help you today?', 'assistant');
-      this.enableInput();
-    }
-
-    this.inputEl.focus();
-  }
-
-  private closeChat() {
-    this.isOpen = false;
-    this.windowEl.classList.add('oai-hidden');
-    this.startRecaptureWatch();
-  }
-
-  // ─── Recapture watcher ────────────────────────────────────────────────────
-  // Started when the user closes the widget mid-flow. Watches for signals that
-  // they are trying to complete the current step on their own, then shows a
-  // lightweight bubble nudge (not the full chat).
-
-  private startRecaptureWatch(): void {
-    const session = this.copilot.getSession();
-    if (!session || session.status === 'completed') return;
-
-    this.stopRecaptureWatch(); // clear any previous watcher
-
-    const step = session.currentStep;
-    this.recaptureWatcher = new RecaptureWatcher({
-      step,
-      onTrigger: (reason: RecaptureReason) => {
-        const reasonLabel =
-          reason === 'page_intent' ? 'You navigated here — ' :
-          reason === 'click_intent' ? 'Looks like you\'re trying this — ' :
-          'Still working on this? ';
-        showBubbleNudge(
-          `${reasonLabel}Need help with "${step.title}"?`,
-          () => {
-            this.bubbleEl.style.display = 'flex';
-            this.openCopilot('recapture', { reason, stepTitle: step.title });
-          }
-        );
-      },
-    });
-    this.recaptureWatcher.start();
-  }
-
-  private stopRecaptureWatch(): void {
-    if (this.recaptureWatcher) {
-      this.recaptureWatcher.stop();
-      this.recaptureWatcher = null;
-    }
-    hideBubbleNudge();
-  }
-
-  // ─── Message submission — routes through copilot agent ───────────────────
+  // ─── Message submission ───────────────────────────────────────────────────
 
   private async submitMessage() {
     const content = this.inputEl.value.trim();
@@ -351,37 +308,34 @@ export class OnboardAIWidget {
     this.inputEl.style.height = 'auto';
 
     addMessage(this.messagesEl, content, 'user');
-
     const streamDiv = createStreamingBubble(this.messagesEl);
 
     const session = this.copilot.getSession();
-
     if (session) {
-      // Use the copilot agent
-      const action = await this.copilot.sendMessage(content);
-      if (action) {
-        this.handleAgentAction(action, streamDiv);
+      const result = await this.copilot.sendMessage(content, (word) => {
+        // Live text streaming — append words as they arrive
+        streamDiv.classList.remove('oai-streaming');
+        streamDiv.textContent = (streamDiv.textContent ?? '') + word;
+        this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+      });
+      if (result) {
+        this.handleAgentAction(result.action, streamDiv, result.messageId);
       } else {
         streamDiv.textContent = 'Sorry, I had trouble responding. Please try again.';
         this.finishStreaming(streamDiv);
       }
-    } else if (this.socket?.isConnected()) {
-      // Fallback: generic streaming chat (no active session)
-      // We need a conversation ID — use socket's last known one or skip
-      streamDiv.textContent = 'Starting a conversation...';
-      this.finishStreaming(streamDiv);
     } else {
-      streamDiv.textContent = "No active onboarding session. Please refresh the page.";
+      streamDiv.textContent = 'No active onboarding session. Please refresh the page.';
       this.finishStreaming(streamDiv);
     }
   }
 
-  private handleAgentAction(action: AgentAction, streamDiv: HTMLDivElement) {
+  private handleAgentAction(action: AgentAction, streamDiv: HTMLDivElement, messageId: string | null = null) {
     streamDiv.remove();
 
     switch (action.type) {
       case 'ask_clarification': {
-        addChips(
+        const chipWrap = addChips(
           this.messagesEl,
           action.question,
           action.options ?? [],
@@ -390,24 +344,30 @@ export class OnboardAIWidget {
             this.submitMessage();
           }
         );
+        if (messageId) {
+          addFeedbackButtons(chipWrap, (v) => this.copilot.sendFeedback(messageId, v));
+        }
         break;
       }
 
       case 'execute_page_action': {
         this.copilot.executePageAction(action);
         addActionToast(this.messagesEl, action.message);
+        // If agent flagged verification, check the DOM after the action settles
+        if (action.shouldVerify) {
+          this.copilot.scheduleVerify();
+        }
         break;
       }
 
       case 'complete_step': {
         addMessage(this.messagesEl, action.message, 'assistant');
-        // Step completed — session update will fire via onSessionUpdate callback
         const session = this.copilot.getSession();
         if (session) {
           setTimeout(() => {
             const next = session.flow.steps.find((s) => s.order > session.currentStep.order);
             if (next) {
-              addMessage(this.messagesEl, `Next up: **${next.title}** — ${next.description || 'ready when you are!'}`, 'assistant');
+              addMessage(this.messagesEl, `Next up: ${next.title} — ${next.description || 'ready when you are!'}`, 'assistant');
             }
           }, 800);
         }
@@ -427,11 +387,9 @@ export class OnboardAIWidget {
 
       case 'escalate_to_human': {
         addMessage(this.messagesEl, action.message, 'assistant');
-        // Lock input — session is now waiting for a human
         this.inputEl.disabled = true;
         this.inputEl.placeholder = 'Waiting for a team member…';
         this.sendBtn.disabled = true;
-        // Show a subtle status pill
         const pill = document.createElement('div');
         pill.style.cssText = 'margin:8px 12px;padding:8px 12px;background:#fef3c7;border:1px solid #fde68a;border-radius:8px;font-size:11px;color:#92400e;display:flex;align-items:center;gap:6px;';
         pill.innerHTML = '<span style="width:7px;height:7px;border-radius:50%;background:#f59e0b;flex-shrink:0;"></span>Support ticket created — a team member will reach out soon.';
@@ -442,10 +400,11 @@ export class OnboardAIWidget {
 
       case 'chat': {
         const steps = tryParseSteps(action.content);
-        if (steps) {
-          addStepsCard(this.messagesEl, steps);
-        } else {
-          addMessage(this.messagesEl, action.content, 'assistant');
+        const msgEl = steps
+          ? addStepsCard(this.messagesEl, steps)
+          : addMessage(this.messagesEl, action.content, 'assistant');
+        if (messageId) {
+          addFeedbackButtons(msgEl, (v) => this.copilot.sendFeedback(messageId, v));
         }
         break;
       }
@@ -463,18 +422,18 @@ export class OnboardAIWidget {
     this.inputEl.focus();
   }
 
-  // ─── DOM event bindings ───────────────────────────────────────────────────
+  // ─── Event bindings ───────────────────────────────────────────────────────
 
   private bindEvents() {
-    this.bubbleEl.addEventListener('click', () => {
-      if (this.isOpen) {
-        this.closeChat();
+    // Collapse / expand toggle tab
+    document.getElementById('oai-toggle')!.addEventListener('click', () => {
+      if (this.isCollapsed) {
+        this.expandPanel();
       } else {
-        this.openCopilot('manual');
+        this.collapsePanel();
       }
     });
 
-    document.getElementById('oai-close')!.addEventListener('click', () => this.closeChat());
     this.sendBtn.addEventListener('click', () => this.submitMessage());
 
     this.inputEl.addEventListener('keydown', (e) => {
@@ -487,11 +446,7 @@ export class OnboardAIWidget {
     this.inputEl.addEventListener('input', () => {
       this.sendBtn.disabled = this.inputEl.value.trim().length === 0;
       this.inputEl.style.height = 'auto';
-      this.inputEl.style.height = Math.min(this.inputEl.scrollHeight, 100) + 'px';
-    });
-
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && this.isOpen) this.closeChat();
+      this.inputEl.style.height = Math.min(this.inputEl.scrollHeight, 90) + 'px';
     });
   }
 
@@ -500,7 +455,6 @@ export class OnboardAIWidget {
     this.inputEl.placeholder = 'Type a message…';
   }
 
-  /** Consume the cross-page resume token from localStorage. Returns true if one was present. */
   private consumeResumeToken(): boolean {
     const raw = localStorage.getItem('_oai_resume');
     if (!raw) return false;
@@ -508,21 +462,15 @@ export class OnboardAIWidget {
     return true;
   }
 
-  /** Returns true if the current page matches the step's targetUrl. */
   private isOnTargetPage(targetUrl: string): boolean {
     try {
       const target = new URL(targetUrl, window.location.origin);
-      if (target.origin !== window.location.origin) {
-        // cross-domain step: never on the right page unless origins match
-        return target.origin === window.location.origin;
-      }
-      return window.location.pathname === target.pathname;
+      return target.origin === window.location.origin && window.location.pathname === target.pathname;
     } catch {
       return false;
     }
   }
 
-  /** Shorten a URL for display in the navigation chip. */
   private shortUrl(url: string): string {
     try {
       const parsed = new URL(url, window.location.origin);

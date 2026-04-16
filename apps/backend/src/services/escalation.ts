@@ -4,7 +4,7 @@
 import { Resend } from 'resend';
 import { prisma } from '../lib/prisma';
 
-const DASHBOARD_URL = process.env.FRONTEND_URL ?? 'https://app.onboardai.com';
+const DASHBOARD_URL = process.env.FRONTEND_URL ?? 'https://app.useprism.ai';
 
 export interface EscalationContext {
   userId: string | null;
@@ -77,7 +77,7 @@ export async function notifyTeam(params: {
       .join('');
 
     tasks.push(resend.emails.send({
-      from: `OnboardAI <hello@onboardai.com>`,
+      from: `Prism <hello@useprism.ai>`,
       to: owner.email,
       subject: `[${orgName}] Human escalation — ${context.stepTitle}`,
       html: `
@@ -111,7 +111,7 @@ export async function notifyTeam(params: {
     </a>
   </td></tr>
   <tr><td style="padding:16px 32px;border-top:1px solid #e2e8f0;">
-    <p style="margin:0;color:#94a3b8;font-size:11px;">Ticket #${ticketId.slice(0, 8)} · Powered by OnboardAI</p>
+    <p style="margin:0;color:#94a3b8;font-size:11px;">Ticket #${ticketId.slice(0, 8)} · Powered by Prism</p>
   </td></tr>
 </table>
 </td></tr>

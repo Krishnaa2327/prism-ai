@@ -34,7 +34,7 @@ export default function OnboardingChecklist() {
       {/* Header */}
       <div className="flex items-start justify-between mb-4">
         <div>
-          <h2 className="text-base font-semibold text-slate-900">Get started with OnboardAI</h2>
+          <h2 className="text-base font-semibold text-slate-900">Get started with Prism</h2>
           <p className="text-sm text-slate-500 mt-0.5">
             {status.completedCount} of {status.totalCount} steps complete
           </p>

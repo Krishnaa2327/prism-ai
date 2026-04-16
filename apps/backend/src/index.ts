@@ -23,9 +23,12 @@ import kbRoutes from './routes/kb';
 import usersRoutes from './routes/users';
 import escalationsRoutes from './routes/escalations';
 import failuresRoutes from './routes/failures';
+import sessionsRoutes from './routes/sessions';
+import mcpRoutes from './routes/mcp';
 import { prisma } from './lib/prisma';
 import { errorHandler } from './middleware/errorHandler';
 import { attachWebSocketServer } from './lib/websocket';
+import { checkFlowAlerts } from './services/alerting';
 
 // ─── Startup env validation ───────────────────────────────────────────────────
 const REQUIRED_ENV = ['DATABASE_URL', 'JWT_SECRET', 'OPENAI_API_KEY'];
@@ -83,6 +86,8 @@ app.use('/api/v1/kb', kbRoutes);
 app.use('/api/v1/users', usersRoutes);
 app.use('/api/v1/escalations', escalationsRoutes);
 app.use('/api/v1/failures', failuresRoutes);
+app.use('/api/v1/sessions', sessionsRoutes);
+app.use('/api/v1/mcp', mcpRoutes);
 
 app.get('/health', async (_req, res) => {
   try {
@@ -103,6 +108,16 @@ httpServer.listen(PORT, () => {
   console.log(`[server] HTTP → http://localhost:${PORT}`);
   console.log(`[server] WS   → ws://localhost:${PORT}/ws`);
   console.log(`[server] Env  → ${process.env.NODE_ENV ?? 'development'}`);
+
+  // ── Flow alert scheduler ─────────────────────────────────────────────────
+  // Run once 2 minutes after startup, then every hour.
+  const ALERT_INTERVAL_MS = 60 * 60 * 1000; // 1 h
+  setTimeout(() => {
+    checkFlowAlerts().catch((e) => console.error('[alerting] uncaught error:', e));
+    setInterval(() => {
+      checkFlowAlerts().catch((e) => console.error('[alerting] uncaught error:', e));
+    }, ALERT_INTERVAL_MS);
+  }, 2 * 60 * 1000);
 });
 
 export default app;

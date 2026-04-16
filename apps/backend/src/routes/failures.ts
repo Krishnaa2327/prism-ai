@@ -35,6 +35,7 @@ router.get('/', async (req: AuthenticatedRequest, res: Response) => {
     // Recent escalations (user explicitly asked for help)
     prisma.escalationTicket.findMany({
       where: { organizationId: orgId, status: 'open' },
+      include: { endUser: { select: { externalId: true } } },
       orderBy: { createdAt: 'desc' },
       take: 20,
     }),
@@ -61,12 +62,23 @@ router.get('/', async (req: AuthenticatedRequest, res: Response) => {
     };
   });
 
+  // Batch-fetch flow names for escalation sessions (EscalationTicket has no direct flow relation)
+  const escalationSessionIds = recentEscalations.map((e) => e.sessionId);
+  const escalationSessions = escalationSessionIds.length > 0
+    ? await prisma.userOnboardingSession.findMany({
+        where: { id: { in: escalationSessionIds } },
+        select: { id: true, flow: { select: { name: true } } },
+      })
+    : [];
+  const sessionFlowMap = new Map(escalationSessions.map((s) => [s.id, s.flow.name]));
+
   res.json({
     failures,
     escalations: recentEscalations.map((e) => ({
       ticketId: e.id,
-      userId: e.endUserId,
+      userId: e.endUser.externalId,
       sessionId: e.sessionId,
+      flowName: sessionFlowMap.get(e.sessionId) ?? 'Unknown flow',
       reason: e.reason,
       createdAt: e.createdAt,
       status: e.status,

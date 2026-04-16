@@ -42,6 +42,8 @@ model Organization {
   selectorHealLogs      SelectorHealLog[]
   escalationTickets     EscalationTicket[]
   flowExperiments       FlowExperiment[]
+  mcpConnectors         McpConnector[]
+  auditLogs             AuditLog[]
 
   @@map("organizations")
 }
@@ -215,6 +217,7 @@ model OnboardingStep {
   smartQuestions  Json     @default("[]") @map("smart_questions") // up to 2 questions to ask
   actionType      String?  @map("action_type") // fill_form | click | navigate | api_call | none
   actionConfig    Json     @default("{}") @map("action_config")   // {selector, url, fields, ...}
+  allowedActions  Json     @default("[]") @map("allowed_actions") // [] = all allowed; e.g. ["highlight","navigate"] = read-only
   completionEvent String?  @map("completion_event") // event that auto-marks step done
   isMilestone     Boolean  @default(false) @map("is_milestone") // this step = "aha moment"
   targetUrl       String?  @map("target_url") // optional page this step should run on (e.g. "/settings" or "https://external.com")
@@ -250,12 +253,30 @@ model UserOnboardingSession {
   organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   flow         OnboardingFlow        @relation(fields: [flowId], references: [id], onDelete: Cascade)
   stepProgress UserStepProgress[]
+  messages     SessionMessage[]
 
   @@unique([endUserId, flowId])
   @@index([organizationId])
   @@index([flowId])
   @@index([experimentId])
   @@map("user_onboarding_sessions")
+}
+
+// ─── SessionMessage (per-session conversation history for the AI agent) ────────
+model SessionMessage {
+  id         String   @id @default(uuid())
+  sessionId  String   @map("session_id")
+  stepId     String   @map("step_id")
+  role       String   // user | assistant
+  content    String   // raw text or JSON action summary
+  actionType String?  @map("action_type") // ask_clarification | execute_page_action | complete_step | etc.
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  feedback  Int?     // 1 = thumbs up, -1 = thumbs down, null = no feedback
+  session UserOnboardingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt(sort: Desc)])
+  @@map("session_messages")
 }
 
 // ─── UserStepProgress (per-step completion tracking + intelligence pipeline) ───
@@ -416,4 +437,42 @@ model KnowledgeBaseArticle {
 
   @@index([organizationId])
   @@map("knowledge_base_articles")
+}
+
+// ─── McpConnector (Model Context Protocol server connections) ─────────────────
+// Each connector points to an MCP server URL. The AI agent uses these to call
+// external tools (databases, APIs, internal services) during onboarding flows.
+model McpConnector {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  name           String                              // human label, e.g. "Production DB"
+  serverUrl      String   @map("server_url")        // MCP server endpoint
+  authType       String   @default("none") @map("auth_type") // none | bearer | api_key
+  authValue      String?  @map("auth_value")        // bearer token or API key
+  enabled        Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("mcp_connectors")
+}
+
+// ─── AuditLog (every action the AI took, per org — for compliance + debugging) ─
+model AuditLog {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  sessionId      String?  @map("session_id")
+  endUserId      String?  @map("end_user_id")
+  stepId         String?  @map("step_id")
+  actionType     String   @map("action_type") // ask_clarification | fill_form | click | navigate | highlight | complete_step | escalate_to_human
+  payload        Json     @default("{}") // action-specific details (selector, url, fields, message, etc.)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@index([sessionId])
+  @@map("audit_logs")
 }

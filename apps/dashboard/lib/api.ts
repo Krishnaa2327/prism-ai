@@ -74,6 +74,7 @@ export const api = {
     timeline: (days = 30) => apiFetch<TimelinePoint[]>(`/api/v1/analytics/timeline?days=${days}`),
     triggers: () => apiFetch<TriggerStat[]>('/api/v1/analytics/triggers'),
     intents: (days = 30) => apiFetch<IntentsResponse>(`/api/v1/analytics/intents?days=${days}`),
+    health: () => apiFetch<AgentHealth>('/api/v1/analytics/health'),
   },
 
   config: {
@@ -280,6 +281,32 @@ export const api = {
     trend: () => apiFetch<ActivationTrend>('/api/v1/activation/trend'),
   },
 
+  sessions: {
+    get: (id: string) => apiFetch<{ session: SessionDetail }>(`/api/v1/sessions/${id}`),
+  },
+
+  mcp: {
+    list: () => apiFetch<{ connectors: McpConnector[] }>('/api/v1/mcp'),
+    create: (data: { name: string; serverUrl: string; authType: 'none' | 'bearer' | 'api_key'; authValue?: string; enabled?: boolean }) =>
+      apiFetch<{ connector: McpConnector }>('/api/v1/mcp', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    update: (id: string, data: Partial<{ name: string; serverUrl: string; authType: string; authValue: string; enabled: boolean }>) =>
+      apiFetch<{ connector: McpConnector }>(`/api/v1/mcp/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    delete: (id: string) => apiFetch<{ deleted: boolean }>(`/api/v1/mcp/${id}`, { method: 'DELETE' }),
+  },
+
+  audit: {
+    list: (params?: { limit?: number; offset?: number }) => {
+      const q = new URLSearchParams({ limit: String(params?.limit ?? 100), offset: String(params?.offset ?? 0) });
+      return apiFetch<{ logs: AuditLogEntry[]; total: number }>(`/api/v1/sessions/audit?${q}`);
+    },
+  },
+
   failures: {
     list: () => apiFetch<{
       failures: Array<{
@@ -362,6 +389,9 @@ export interface BillingPlan {
   name: string;
   price: number;
   limit: number;
+  agentLimit: number;
+  mtuLimit: number;
+  features: string[];
   current: boolean;
 }
 
@@ -406,12 +436,27 @@ export interface BillingStatus {
   plan: string;
   planName: string;
   price: number;
+  features: string[];
   monthlyMessageLimit: number;
   messagesUsedThisMonth: number;
+  mtuLimit: number;       // 0 = unlimited
+  mtuUsed: number;
+  agentLimit: number;     // 0 = unlimited
+  agentsUsed: number;
   subscriptionStatus: string;
   currentPeriodEnd: string | null;
   hasStripeCustomer: boolean;
   plans: BillingPlan[];
+}
+
+export interface McpConnector {
+  id: string;
+  name: string;
+  serverUrl: string;
+  authType: 'none' | 'bearer' | 'api_key';
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface OnboardingStep {
@@ -425,6 +470,7 @@ export interface OnboardingStep {
   smartQuestions: string[];
   actionType: string | null;
   actionConfig: Record<string, unknown>;
+  allowedActions: string[]; // [] = all; ['highlight','navigate'] = read-only
   completionEvent: string | null;
   isMilestone: boolean;
   createdAt: string;
@@ -786,4 +832,71 @@ export interface FlowTemplateMeta {
   icon: string;
   benchmarkTimeToValueMins: number;
   stepCount: number;
+}
+
+export interface SessionStepDetail {
+  stepId: string;
+  order: number;
+  title: string;
+  intent: string;
+  isMilestone: boolean;
+  actionType: string | null;
+  status: 'not_started' | 'in_progress' | 'completed' | 'skipped';
+  startedAt: string | null;
+  completedAt: string | null;
+  timeSpentMs: number;
+  messagesCount: number;
+  aiAssisted: boolean;
+  attempts: number;
+  outcome: string | null;
+  dropReason: string | null;
+}
+
+export interface SessionDetail {
+  id: string;
+  status: 'active' | 'completed' | 'abandoned';
+  startedAt: string;
+  completedAt: string | null;
+  lastActiveAt: string;
+  firstValueAt: string | null;
+  collectedData: Record<string, unknown>;
+  flow: { id: string; name: string };
+  endUser: {
+    id: string;
+    externalId: string | null;
+    metadata: Record<string, unknown>;
+    firstSeenAt: string;
+    lastSeenAt: string;
+  };
+  steps: SessionStepDetail[];
+}
+
+export interface AgentHealthSession {
+  id: string;
+  status: 'active' | 'completed' | 'abandoned';
+  flowName: string;
+  userId: string | null;
+  startedAt: string;
+  completedAt: string | null;
+  lastActiveAt: string;
+}
+
+export interface AgentHealth {
+  status: 'green' | 'yellow' | 'red' | 'unknown';
+  successRate: number | null;
+  totalSessions: number;
+  completedSessions: number;
+  avgResponseMs: number | null;
+  windowHours: number;
+  sessions: AgentHealthSession[];
+}
+
+export interface AuditLogEntry {
+  id: string;
+  sessionId: string | null;
+  endUserId: string | null;
+  stepId: string | null;
+  actionType: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
 }

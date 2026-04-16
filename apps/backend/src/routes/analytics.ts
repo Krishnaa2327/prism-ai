@@ -112,7 +112,7 @@ router.get('/intents', authenticateJWT, async (req: AuthenticatedRequest, res: R
   const days = Math.min(parseInt(req.query.days as string) || 30, 90);
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
-  // Fetch all user messages in the window (content + timestamp)
+  // Fetch recent user messages in the window — capped at 2000 to avoid OOM on busy orgs
   const messages = await prisma.message.findMany({
     where: {
       role: 'user',
@@ -121,6 +121,7 @@ router.get('/intents', authenticateJWT, async (req: AuthenticatedRequest, res: R
     },
     select: { content: true, createdAt: true },
     orderBy: { createdAt: 'desc' },
+    take: 2000,
   });
 
   // Classify intent from normalised text
@@ -143,8 +144,8 @@ router.get('/intents', authenticateJWT, async (req: AuthenticatedRequest, res: R
       .slice(0, 120); // cap length so long rambling messages still group
   }
 
-  // Skip system init tokens used by the widget internally
-  const SKIP = new Set(['__init__']);
+  // Skip internal widget system messages — never expose these in intent analytics
+  const SKIP = new Set(['__init__', '__verify__']);
 
   // Group by normalised content
   const map = new Map<string, { raw: string; count: number; lastSeen: Date; intent: ReturnType<typeof classifyIntent> }>();
@@ -170,6 +171,94 @@ router.get('/intents', authenticateJWT, async (req: AuthenticatedRequest, res: R
   for (const q of questions) categorySummary[q.intent] += q.count;
 
   res.json({ questions, categorySummary, totalMessages: messages.length, days });
+});
+
+// ─── GET /api/v1/analytics/health ────────────────────────────────────────────
+// Agent health: last 10 sessions, 24-h success rate, avg step response time
+router.get('/health', authenticateJWT, async (req: AuthenticatedRequest, res: Response) => {
+  const { organizationId } = req.user!;
+  const now = new Date();
+  const since24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const since7d  = new Date(now.getTime() -  7 * 24 * 60 * 60 * 1000);
+
+  // Last 10 sessions (any status) ordered by most recent activity
+  const recentSessions = await prisma.userOnboardingSession.findMany({
+    where: { organizationId },
+    orderBy: { lastActiveAt: 'desc' },
+    take: 10,
+    include: {
+      flow: { select: { name: true } },
+      endUser: { select: { externalId: true } },
+    },
+  });
+
+  // 24-h session counts for success rate
+  const [total24h, completed24h] = await Promise.all([
+    prisma.userOnboardingSession.count({
+      where: { organizationId, startedAt: { gte: since24h } },
+    }),
+    prisma.userOnboardingSession.count({
+      where: { organizationId, startedAt: { gte: since24h }, status: 'completed' },
+    }),
+  ]);
+
+  // Fall back to 7-day window if no 24-h sessions
+  const useFallback = total24h === 0;
+  const [totalWindow, completedWindow] = useFallback
+    ? await Promise.all([
+        prisma.userOnboardingSession.count({
+          where: { organizationId, startedAt: { gte: since7d } },
+        }),
+        prisma.userOnboardingSession.count({
+          where: { organizationId, startedAt: { gte: since7d }, status: 'completed' },
+        }),
+      ])
+    : [total24h, completed24h];
+
+  const successRate = totalWindow > 0 ? Math.round((completedWindow / totalWindow) * 100) : null;
+
+  // Avg time-spent per completed step (proxy for "AI response time per turn")
+  const avgResult = await prisma.userStepProgress.aggregate({
+    where: {
+      status: 'completed',
+      timeSpentMs: { gt: 0 },
+      session: { organizationId, startedAt: { gte: useFallback ? since7d : since24h } },
+    },
+    _avg: { timeSpentMs: true },
+  });
+  const avgResponseMs = avgResult._avg.timeSpentMs
+    ? Math.round(avgResult._avg.timeSpentMs)
+    : null;
+
+  // Status signal
+  let status: 'green' | 'yellow' | 'red' | 'unknown';
+  if (successRate === null) {
+    status = 'unknown';
+  } else if (successRate >= 60) {
+    status = 'green';
+  } else if (successRate >= 20) {
+    status = 'yellow';
+  } else {
+    status = 'red';
+  }
+
+  res.json({
+    status,
+    successRate,
+    totalSessions: totalWindow,
+    completedSessions: completedWindow,
+    avgResponseMs,
+    windowHours: useFallback ? 168 : 24,
+    sessions: recentSessions.map((s) => ({
+      id: s.id,
+      status: s.status,
+      flowName: s.flow.name,
+      userId: s.endUser.externalId,
+      startedAt: s.startedAt,
+      completedAt: s.completedAt,
+      lastActiveAt: s.lastActiveAt,
+    })),
+  });
 });
 
 export default router;

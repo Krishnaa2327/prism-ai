@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'OnboardAI Dashboard',
+  title: 'Prism Dashboard',
   description: 'Manage your AI onboarding agent',
 };
 

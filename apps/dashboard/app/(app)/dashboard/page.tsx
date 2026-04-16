@@ -1,14 +1,14 @@
 'use client';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { api, ActivationOverview, FunnelStep, ActivationTrend, ChurnSummary } from '@/lib/api';
+import { api, ActivationOverview, FunnelStep, ActivationTrend, AgentHealth } from '@/lib/api';
 import OnboardingChecklist from '@/components/OnboardingChecklist';
 
 export default function DashboardPage() {
   const [activation, setActivation] = useState<ActivationOverview | null>(null);
   const [funnel, setFunnel] = useState<{ flowName: string | null; funnel: FunnelStep[] } | null>(null);
   const [trend, setTrend] = useState<ActivationTrend | null>(null);
-  const [churnSummary, setChurnSummary] = useState<ChurnSummary | null>(null);
+  const [health, setHealth] = useState<AgentHealth | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -16,12 +16,12 @@ export default function DashboardPage() {
       api.activation.overview(),
       api.activation.funnel(),
       api.activation.trend().catch(() => null),
-      api.churn.summary().catch(() => null),
-    ]).then(([a, f, t, c]) => {
+      api.analytics.health().catch(() => null),
+    ]).then(([a, f, t, h]) => {
       setActivation(a);
       setFunnel(f);
       setTrend(t);
-      setChurnSummary(c);
+      setHealth(h);
     }).finally(() => setLoading(false));
   }, []);
 
@@ -34,7 +34,7 @@ export default function DashboardPage() {
       <div className="mb-8 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Dashboard</h1>
-          <p className="text-slate-500 text-sm mt-1">Activation overview</p>
+          <p className="text-slate-500 text-sm mt-1">This week's impact</p>
         </div>
         <Link
           href="/activation"
@@ -46,92 +46,46 @@ export default function DashboardPage() {
 
       <OnboardingChecklist />
 
-      {/* Churn alert banner */}
-      {churnSummary && churnSummary.atRisk > 0 && (
-        <div className="mb-6 flex items-center justify-between bg-red-50 border border-red-200 rounded-xl px-5 py-3.5">
-          <div className="flex items-center gap-3">
-            <span className="text-lg">⚠️</span>
-            <div>
-              <p className="text-sm font-semibold text-red-800">
-                {churnSummary.atRisk} user{churnSummary.atRisk > 1 ? 's' : ''} at risk of churning
-              </p>
-              <p className="text-xs text-red-600 mt-0.5">
-                {churnSummary.breakdown.critical > 0 && `${churnSummary.breakdown.critical} critical · `}
-                {churnSummary.breakdown.high > 0 && `${churnSummary.breakdown.high} high risk`}
-              </p>
-            </div>
-          </div>
-          <Link
-            href="/churn"
-            className="text-xs font-medium text-red-700 hover:text-red-900 border border-red-300 hover:border-red-400 px-3 py-1.5 rounded-lg transition-colors"
-          >
-            View at-risk users →
-          </Link>
-        </div>
-      )}
+      {/* Agent health panel */}
+      {health && <AgentHealthPanel health={health} />}
 
       {!hasData ? (
         <GettingStarted />
       ) : (
         <>
-          {/* Activation metric cards */}
+          {/* ROI metric cards — this week framing with deltas */}
           <div className="grid grid-cols-2 xl:grid-cols-4 gap-4 mb-8">
-            <StatCard
-              label="Sessions started"
-              value={activation?.totalSessions ?? 0}
-              sub="Users who began onboarding"
-              icon="🚀"
-            />
-            <StatCard
+            <ROICard
               label="Completed onboarding"
-              value={`${activation?.completionRate ?? 0}%`}
-              sub={`${activation?.completedSessions ?? 0} users`}
-              icon="✅"
+              value={trend ? `${trend.thisWeek.completionRate}%` : `${activation?.completionRate ?? 0}%`}
+              context={trend ? `${trend.thisWeek.completed} of ${trend.thisWeek.sessions} this week` : `${activation?.completedSessions ?? 0} total`}
+              delta={trend?.deltas.completionRate ?? null}
+              deltaLabel="vs last week"
+              deltaSuffix="%"
+              highlight
             />
-            <StatCard
+            <ROICard
+              label="Sessions this week"
+              value={trend ? trend.thisWeek.sessions : activation?.totalSessions ?? 0}
+              context={trend ? `${trend.lastWeek.sessions} last week` : 'all time'}
+              delta={trend?.deltas.sessions ?? null}
+              deltaLabel="vs last week"
+            />
+            <ROICard
               label="Reached first value"
-              value={activation?.firstValueCount ?? 0}
-              sub="Hit the aha moment"
-              icon="🎉"
+              value={trend ? trend.thisWeek.firstValue : activation?.firstValueCount ?? 0}
+              context={trend ? `${trend.thisWeek.firstValueRate}% of sessions` : 'hit the aha moment'}
+              delta={trend ? trend.thisWeek.firstValue - trend.lastWeek.firstValue : null}
+              deltaLabel="vs last week"
             />
-            <StatCard
-              label="Avg time to value"
+            <ROICard
+              label="Avg time to activation"
               value={activation?.avgTimeToValueMins != null ? `${activation.avgTimeToValueMins}m` : '—'}
-              sub="From signup to milestone"
-              icon="⏱️"
+              context="from start to milestone"
+              delta={null}
+              deltaLabel=""
             />
           </div>
-
-          {/* Week-over-week trend strip */}
-          {trend && (trend.thisWeek.sessions > 0 || trend.lastWeek.sessions > 0) && (
-            <div className="bg-white rounded-xl border border-slate-200 p-5 mb-6">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">This week vs last week</h2>
-                <Link href="/activation" className="text-xs text-brand-600 hover:underline">Full report →</Link>
-              </div>
-              <div className="grid grid-cols-3 gap-4">
-                {[
-                  { label: 'Sessions', value: trend.thisWeek.sessions, delta: trend.deltas.sessions, suffix: '' },
-                  { label: 'Completion rate', value: trend.thisWeek.completionRate, delta: trend.deltas.completionRate, suffix: '%' },
-                  { label: 'First value rate', value: trend.thisWeek.firstValueRate, delta: trend.deltas.firstValueRate, suffix: '%' },
-                ].map((item) => (
-                  <div key={item.label}>
-                    <p className="text-xs text-slate-400 mb-1">{item.label}</p>
-                    <div className="flex items-baseline gap-2">
-                      <span className="text-xl font-bold text-slate-900">{item.value}{item.suffix}</span>
-                      {item.delta !== 0 && (
-                        <span className={`text-xs font-semibold ${item.delta > 0 ? 'text-green-600' : 'text-red-500'}`}>
-                          {item.delta > 0 ? '↑' : '↓'} {Math.abs(item.delta)}{item.suffix}
-                        </span>
-                      )}
-                      {item.delta === 0 && <span className="text-xs text-slate-300">→</span>}
-                    </div>
-                    <p className="text-xs text-slate-300 mt-0.5">vs {trend.lastWeek[item.label === 'Sessions' ? 'sessions' : item.label === 'Completion rate' ? 'completionRate' : 'firstValueRate']}{item.suffix} last week</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
 
           {/* Drop-off funnel preview */}
           {funnel && funnel.funnel.length > 0 && (
@@ -181,15 +135,35 @@ export default function DashboardPage() {
   );
 }
 
-function StatCard({ label, value, sub, icon }: { label: string; value: string | number; sub: string; icon: string }) {
+function ROICard({
+  label, value, context, delta, deltaLabel, deltaSuffix = '', highlight = false,
+}: {
+  label: string;
+  value: string | number;
+  context: string;
+  delta: number | null;
+  deltaLabel: string;
+  deltaSuffix?: string;
+  highlight?: boolean;
+}) {
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-5">
-      <div className="flex items-center gap-2 mb-3">
-        <span className="text-xl">{icon}</span>
-        <span className="text-xs font-medium text-slate-400 uppercase tracking-wide">{label}</span>
+    <div className={`bg-white rounded-xl border p-5 ${highlight ? 'border-brand-200' : 'border-slate-200'}`}>
+      <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-3">{label}</p>
+      <div className="flex items-baseline gap-2.5 mb-1">
+        <span className={`text-3xl font-bold ${highlight ? 'text-brand-700' : 'text-slate-900'}`}>{value}</span>
+        {delta !== null && delta !== 0 && (
+          <span className={`text-sm font-semibold ${delta > 0 ? 'text-green-600' : 'text-red-500'}`}>
+            {delta > 0 ? '↑' : '↓'}{Math.abs(delta)}{deltaSuffix}
+          </span>
+        )}
+        {delta === 0 && <span className="text-sm text-slate-300">→</span>}
       </div>
-      <p className="text-3xl font-bold text-slate-900">{value}</p>
-      <p className="text-xs text-slate-400 mt-1">{sub}</p>
+      <p className="text-xs text-slate-400">
+        {context}
+        {delta !== null && deltaLabel && (
+          <span className="text-slate-300"> · {deltaLabel}</span>
+        )}
+      </p>
     </div>
   );
 }
@@ -217,6 +191,111 @@ function GettingStarted() {
           Get your API key
         </Link>
       </div>
+    </div>
+  );
+}
+
+function AgentHealthPanel({ health }: { health: AgentHealth }) {
+  const dotColor = {
+    green: 'bg-green-500',
+    yellow: 'bg-yellow-400',
+    red: 'bg-red-500',
+    unknown: 'bg-slate-300',
+  }[health.status];
+
+  const label = {
+    green: 'Healthy',
+    yellow: 'Degraded',
+    red: 'Unhealthy',
+    unknown: 'No data yet',
+  }[health.status];
+
+  const labelColor = {
+    green: 'text-green-700',
+    yellow: 'text-yellow-700',
+    red: 'text-red-700',
+    unknown: 'text-slate-500',
+  }[health.status];
+
+  function fmtMs(ms: number | null) {
+    if (ms === null) return '—';
+    if (ms < 1000) return `${ms}ms`;
+    return `${(ms / 1000).toFixed(1)}s`;
+  }
+
+  function fmtRelative(iso: string) {
+    const diffMs = Date.now() - new Date(iso).getTime();
+    const mins = Math.floor(diffMs / 60_000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    return `${Math.floor(hrs / 24)}d ago`;
+  }
+
+  const windowLabel = health.windowHours === 24 ? 'last 24h' : 'last 7d';
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-5 mb-6">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-3">
+          <span className={`inline-block h-3 w-3 rounded-full ${dotColor} ring-2 ring-offset-1 ${
+            health.status === 'green' ? 'ring-green-200' :
+            health.status === 'yellow' ? 'ring-yellow-200' :
+            health.status === 'red' ? 'ring-red-200' : 'ring-slate-200'
+          }`} />
+          <h2 className="text-sm font-semibold text-slate-700">Agent health</h2>
+          <span className={`text-sm font-semibold ${labelColor}`}>{label}</span>
+        </div>
+        <span className="text-xs text-slate-400">{windowLabel}</span>
+      </div>
+
+      <div className="grid grid-cols-3 gap-4 mb-5">
+        <div>
+          <p className="text-xs text-slate-400 mb-1">Success rate</p>
+          <p className="text-2xl font-bold text-slate-900">
+            {health.successRate !== null ? `${health.successRate}%` : '—'}
+          </p>
+          <p className="text-xs text-slate-400">{health.completedSessions}/{health.totalSessions} sessions</p>
+        </div>
+        <div>
+          <p className="text-xs text-slate-400 mb-1">Avg step time</p>
+          <p className="text-2xl font-bold text-slate-900">{fmtMs(health.avgResponseMs)}</p>
+          <p className="text-xs text-slate-400">per completed step</p>
+        </div>
+        <div>
+          <p className="text-xs text-slate-400 mb-1">Recent sessions</p>
+          <p className="text-2xl font-bold text-slate-900">{health.sessions.length}</p>
+          <p className="text-xs text-slate-400">shown below</p>
+        </div>
+      </div>
+
+      {health.sessions.length > 0 && (
+        <div className="border-t border-slate-100 pt-4">
+          <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Last 10 sessions</p>
+          <div className="space-y-1">
+            {health.sessions.map((s) => (
+              <Link key={s.id} href={`/sessions/${s.id}`} className="flex items-center justify-between text-xs hover:bg-slate-50 -mx-1 px-1 py-0.5 rounded">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 ${
+                    s.status === 'completed' ? 'bg-green-500' :
+                    s.status === 'active'    ? 'bg-blue-500'  : 'bg-slate-300'
+                  }`} />
+                  <span className="text-slate-600 truncate max-w-[140px]">{s.flowName}</span>
+                  {s.userId && <span className="text-slate-400 truncate max-w-[100px]">· {s.userId}</span>}
+                </div>
+                <div className="flex items-center gap-3 flex-shrink-0 ml-2">
+                  <span className={`font-medium ${
+                    s.status === 'completed' ? 'text-green-600' :
+                    s.status === 'active'    ? 'text-blue-600'  : 'text-slate-400'
+                  }`}>{s.status}</span>
+                  <span className="text-slate-400">{fmtRelative(s.lastActiveAt)}</span>
+                </div>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

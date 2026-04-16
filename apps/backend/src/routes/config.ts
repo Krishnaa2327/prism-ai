@@ -34,7 +34,44 @@ router.get('/', authenticateJWT, async (req: AuthenticatedRequest, res: Response
     select: { id: true, name: true, apiKey: true, planType: true, customInstructions: true },
   });
 
+  if (!org) {
+    res.status(404).json({ error: 'Organization not found' });
+    return;
+  }
+
   res.json(org);
+});
+
+// ─── GET /api/v1/config/alerts ───────────────────────────────────────────────
+router.get('/alerts', authenticateJWT, async (req: AuthenticatedRequest, res: Response) => {
+  const { organizationId } = req.user!;
+  const org = await prisma.organization.findUnique({
+    where: { id: organizationId },
+    select: { selectorAlertEnabled: true, selectorAlertWebhook: true },
+  });
+  res.json({
+    selectorAlertEnabled: org?.selectorAlertEnabled ?? false,
+    selectorAlertWebhook: org?.selectorAlertWebhook ?? null,
+  });
+});
+
+const AlertConfigSchema = z.object({
+  selectorAlertEnabled: z.boolean().optional(),
+  selectorAlertWebhook: z.string().url().nullable().optional(),
+});
+
+// ─── PUT /api/v1/config/alerts ────────────────────────────────────────────────
+router.put('/alerts', authenticateJWT, async (req: AuthenticatedRequest, res: Response) => {
+  const { organizationId } = req.user!;
+  const body = AlertConfigSchema.parse(req.body);
+  await prisma.organization.update({
+    where: { id: organizationId },
+    data: {
+      ...(body.selectorAlertEnabled !== undefined && { selectorAlertEnabled: body.selectorAlertEnabled }),
+      ...(body.selectorAlertWebhook !== undefined && { selectorAlertWebhook: body.selectorAlertWebhook }),
+    },
+  });
+  res.json({ saved: true });
 });
 
 // ─── POST /api/v1/config/rotate-key ─────────────────────────────────────────

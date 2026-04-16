@@ -11,11 +11,12 @@ const nav = [
   { href: '/failures',             label: 'Failure Inbox',   icon: '◭' },
   { href: '/escalations',          label: 'Escalations',     icon: '◬' },
   { href: '/conversations',        label: 'Conversations',   icon: '◷' },
-  { href: '/analytics',            label: 'Analytics',       icon: '◱' },
+  { href: '/settings/audit',       label: 'Audit Log',       icon: '◱' },
   { href: '/settings/knowledge',   label: 'Knowledge Base',  icon: '◫' },
   { href: '/settings/ai',          label: 'AI Config',       icon: '◈' },
   { href: '/settings/widget',      label: 'Widget',          icon: '◆' },
   { href: '/settings/billing',     label: 'Billing',         icon: '◇' },
+  { href: '/docs',                 label: 'Docs',            icon: '◻' },
 ];
 
 export default function Sidebar() {

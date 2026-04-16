@@ -3,11 +3,12 @@ import { OnboardingStep, Organization } from '@prisma/client';
 
 import { executeApiCall, interpolate } from './apicall';
 import { searchKnowledgeBase } from './knowledge';
+import { loadMcpTools, toOpenAITools, callMcpTool, resolveMcpCall, ConnectorToolBundle } from './mcp';
 import { logger, withRetry } from '../lib/logger';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// ─── Tool definitions — what the AI can do on a step ─────────────────────────
+// ─── Tool definitions ─────────────────────────────────────────────────────────
 
 const AGENT_TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
   {
@@ -15,16 +16,12 @@ const AGENT_TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     function: {
       name: 'ask_clarification',
       description:
-        'Ask the user one smart clarifying question needed to complete this step. Use sparingly — at most 1-2 questions per step.',
+        'Ask the user ONE focused question to collect information needed to proceed. Include 2-4 options when possible. Use at most once per turn.',
       parameters: {
         type: 'object',
         properties: {
-          question: { type: 'string', description: 'The question to ask the user' },
-          options: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'Optional quick-reply options (2-4 choices)',
-          },
+          question: { type: 'string' },
+          options: { type: 'array', items: { type: 'string' } },
         },
         required: ['question'],
       },
@@ -35,49 +32,28 @@ const AGENT_TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     function: {
       name: 'execute_page_action',
       description:
-        'Instruct the widget to perform an action on the current page — fill a form, click a button, highlight an element, or navigate.',
+        'Perform an action on the current page. Use CSS selectors exclusively from the LIVE PAGE ELEMENTS list — never invent selectors.',
       parameters: {
         type: 'object',
         properties: {
           type: {
             type: 'string',
             enum: ['fill_form', 'click', 'navigate', 'highlight'],
-            description: 'The action type',
           },
-          selector: {
-            type: 'string',
-            description: 'CSS selector for click or single-element highlight actions (e.g. "#upload-btn")',
-          },
-          url: {
-            type: 'string',
-            description: 'URL for navigate action',
-          },
+          selector: { type: 'string', description: 'CSS selector for click or highlight (must be from live page elements)' },
+          url:      { type: 'string', description: 'URL for navigate action' },
           fields: {
             type: 'object',
-            description: 'For fill_form: map of CSS selector → value (e.g. {"#dashboard-name": "Revenue"})',
+            description: 'fill_form: { "CSS selector": "value" } — substitute user-provided values from collectedData',
           },
-          message: {
-            type: 'string',
-            description: 'Message to show the user explaining what the AI just did',
-          },
-          highlightMode: {
-            type: 'string',
-            enum: ['spotlight', 'beacon', 'arrow', 'multi'],
-            description: 'For highlight actions — how to visually indicate the element. spotlight: dark backdrop with cutout + ring (maximum attention, use for critical actions). beacon: pulsing dot badge + tooltip (non-intrusive, use for passive hints). arrow: floating speech bubble with directional arrow + ring (use for explanatory callouts). multi: numbered rings on several elements at once (use when pointing out a sequence of things). Default: spotlight.',
-          },
-          highlightLabel: {
-            type: 'string',
-            description: 'For highlight actions — custom tooltip or callout text. Keep it short (< 40 chars).',
-          },
-          highlightSelectors: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'For multi-highlight only — list of CSS selectors to highlight simultaneously.',
-          },
-          highlightLabels: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'For multi-highlight only — labels for each selector (same order). Shown as numbered step names.',
+          message: { type: 'string', description: 'Short confirmation shown to the user (≤12 words)' },
+          highlightMode: { type: 'string', enum: ['spotlight', 'beacon', 'arrow', 'multi'] },
+          highlightLabel: { type: 'string' },
+          highlightSelectors: { type: 'array', items: { type: 'string' } },
+          highlightLabels: { type: 'array', items: { type: 'string' } },
+          shouldVerify: {
+            type: 'boolean',
+            description: 'Set true for fill_form/click so the widget sends a __verify__ follow-up after execution.',
           },
         },
         required: ['type', 'message'],
@@ -89,18 +65,12 @@ const AGENT_TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     function: {
       name: 'complete_step',
       description:
-        'Mark the current onboarding step as complete and advance to the next step. Call this when the user has successfully finished the step.',
+        'Mark this step complete and advance. Only call when the user has actually finished the step — not speculatively.',
       parameters: {
         type: 'object',
         properties: {
-          message: {
-            type: 'string',
-            description: 'Congratulatory message to show the user',
-          },
-          collectedData: {
-            type: 'object',
-            description: 'Key-value pairs of data collected during this step',
-          },
+          message: { type: 'string' },
+          collectedData: { type: 'object' },
         },
         required: ['message'],
       },
@@ -110,13 +80,12 @@ const AGENT_TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'celebrate_milestone',
-      description:
-        'Called when the user reaches the first-value milestone (the "aha moment"). Show celebration UI.',
+      description: 'User reached the first-value / aha-moment milestone.',
       parameters: {
         type: 'object',
         properties: {
-          headline: { type: 'string', description: 'Short celebration headline' },
-          insight: { type: 'string', description: 'The value/insight the user just unlocked' },
+          headline: { type: 'string' },
+          insight:  { type: 'string' },
         },
         required: ['headline', 'insight'],
       },
@@ -127,23 +96,13 @@ const AGENT_TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     function: {
       name: 'escalate_to_human',
       description:
-        'Hand the user off to a human support agent. Use when: (1) the user explicitly asks to speak to a human, (2) they are clearly frustrated and the AI cannot resolve their issue, (3) the issue is outside the scope of onboarding (billing, bugs, refunds). Do NOT use for questions you can answer.',
+        'Hand off to a human agent. Only when: user explicitly asks, repeated failure to help, or billing/bug/refund issue.',
       parameters: {
         type: 'object',
         properties: {
-          reason: {
-            type: 'string',
-            description: 'Brief description of why escalation was triggered (shown to the support team)',
-          },
-          trigger: {
-            type: 'string',
-            enum: ['user_requested', 'agent_detected'],
-            description: '"user_requested" if they asked for a human, "agent_detected" if you detected they need one',
-          },
-          message: {
-            type: 'string',
-            description: 'Empathetic message to show the user — confirm help is on the way, set expectations',
-          },
+          reason:  { type: 'string' },
+          trigger: { type: 'string', enum: ['user_requested', 'agent_detected'] },
+          message: { type: 'string' },
         },
         required: ['reason', 'trigger', 'message'],
       },
@@ -154,28 +113,15 @@ const AGENT_TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     function: {
       name: 'call_api',
       description:
-        'Make an HTTP request to an external API endpoint — e.g. to verify a user\'s setup, create a resource, check integration status, or fetch data that will help guide the user. The full response is returned to you so you can decide what to do next.',
+        'Make an HTTP request to verify a setup, create a resource, or fetch data. Response is returned to you for a follow-up action.',
       parameters: {
         type: 'object',
         properties: {
-          url: { type: 'string', description: 'The endpoint URL to call' },
-          method: {
-            type: 'string',
-            enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
-            description: 'HTTP method',
-          },
-          headers: {
-            type: 'object',
-            description: 'Optional additional HTTP headers (e.g. Authorization)',
-          },
-          body: {
-            type: 'object',
-            description: 'Request body for POST/PUT/PATCH. Use {{variable}} to reference collectedData values.',
-          },
-          reason: {
-            type: 'string',
-            description: 'Brief description of why you are calling this endpoint',
-          },
+          url:     { type: 'string' },
+          method:  { type: 'string', enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] },
+          headers: { type: 'object' },
+          body:    { type: 'object', description: 'Use {{variable}} to reference collectedData values' },
+          reason:  { type: 'string' },
         },
         required: ['url', 'method', 'reason'],
       },
@@ -183,34 +129,407 @@ const AGENT_TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
   },
 ];
 
+const AGENT_TOOLS_NO_API = AGENT_TOOLS.filter((t) => t.function.name !== 'call_api');
+
 export type AgentAction =
   | { type: 'ask_clarification'; question: string; options?: string[] }
-  | { type: 'execute_page_action'; actionType: string; payload: Record<string, unknown>; message: string }
+  | { type: 'execute_page_action'; actionType: string; payload: Record<string, unknown>; message: string; shouldVerify?: boolean }
   | { type: 'complete_step'; message: string; collectedData?: Record<string, unknown> }
   | { type: 'celebrate_milestone'; headline: string; insight: string }
-
   | { type: 'call_api'; url: string; method: string; reason: string }
   | { type: 'escalate_to_human'; reason: string; trigger: string; message: string }
   | { type: 'chat'; content: string };
 
-/**
- * The AI setup + activation agent.
- *
- * Given the current onboarding step, the user's message, and collected data so far,
- * the agent decides what to do next: ask a question, execute a page action,
- * complete the step, celebrate a milestone, or just chat.
- */
 export interface PageContext {
   url: string;
   title: string;
   headings: string[];
-  elements: Array<{ tag: string; selector: string; text: string; type?: string }>;
+  elements: Array<{ tag: string; selector: string; text: string; type?: string; value?: string }>;
 }
 
-// Tools for the follow-up turn after call_api — excludes call_api to prevent loops
-const AGENT_TOOLS_NO_API: OpenAI.Chat.ChatCompletionTool[] = AGENT_TOOLS.filter(
-  (t) => t.function.name !== 'call_api'
-);
+// ─── Model routing ────────────────────────────────────────────────────────────
+function selectModel(opts: {
+  isInit: boolean;
+  isVerify: boolean;
+  hasActionConfig: boolean;
+  hasUnansweredQuestions: boolean;
+  hasKbResults: boolean;
+}): string {
+  const { isInit, isVerify, hasActionConfig, hasUnansweredQuestions, hasKbResults } = opts;
+
+  if (isVerify) return 'gpt-4o-mini';
+  if (isInit && hasActionConfig && !hasUnansweredQuestions) return 'gpt-4o-mini';
+  if (hasKbResults) return 'gpt-4o';
+  return 'gpt-4o';
+}
+
+// ─── System prompt builder ────────────────────────────────────────────────────
+function buildSystemPrompt(opts: {
+  orgName: string;
+  customInstructions?: string | null;
+  step: OnboardingStep;
+  collectedData: Record<string, unknown>;
+  isLastStep: boolean;
+  userMetadata?: Record<string, unknown>;
+  userHistoryFormatted?: string;
+  domSummary: string;
+  kbSection: string;
+  mcpSection: string;
+  isInit: boolean;
+  isVerify: boolean;
+  unansweredQuestions: string[];
+  actionHint: string;
+}): string {
+  const {
+    orgName, customInstructions, step, collectedData, isLastStep,
+    userMetadata, userHistoryFormatted, domSummary, kbSection, mcpSection,
+    isInit, isVerify, unansweredQuestions, actionHint,
+  } = opts;
+
+  const metaKeys = userMetadata ? Object.keys(userMetadata) : [];
+  const userProfile = metaKeys.length > 0
+    ? `USER PROFILE: ${JSON.stringify(userMetadata)} — match your language and depth to this user's context.`
+    : '';
+
+  const historySection = userHistoryFormatted ? `\n${userHistoryFormatted}\n` : '';
+
+  const verifyInstructions = isVerify
+    ? `
+VERIFICATION TURN: The widget just executed a page action and is now reporting the updated DOM.
+Examine LIVE PAGE ELEMENTS to check if the action succeeded (fields have values, button was clicked, etc.).
+- If success → call complete_step immediately.
+- If failed → call execute_page_action again with the corrected selector or a slightly adjusted approach.
+- Do not ask questions during verification.`
+    : '';
+
+  const initInstructions = isInit && !isVerify
+    ? `
+INIT TURN: The user just arrived at this step. Do not greet or explain — act immediately:
+1. If actionConfig has a selector/url → call execute_page_action with those values now (set shouldVerify: true for fill_form/click).
+2. If there are unanswered required questions → call ask_clarification with the first one: "${unansweredQuestions[0] ?? 'none'}".
+3. If nothing is needed → call complete_step now.`
+    : '';
+
+  const generalInstructions = !isInit && !isVerify
+    ? `
+RESPONSE TURN: The user has replied or taken an action.
+- If their answer fills a required field AND actionConfig exists → call execute_page_action immediately (set shouldVerify: true for fill_form/click). Do not confirm first.
+- If their answer fills the last required field AND no action needed → call complete_step immediately.
+- If more info is needed → call ask_clarification (ONE question, 2-4 options).
+- If step is fully done → ${isLastStep ? 'call celebrate_milestone' : 'call complete_step'}.`
+    : '';
+
+  return `You are Prism, an AI onboarding guide inside "${orgName}". You ALWAYS call exactly one tool — never respond with plain text.
+${userProfile}${historySection}
+STEP: "${step.title}"
+Goal: ${step.description || step.title}
+${step.aiPrompt ? `Instructions: ${step.aiPrompt}` : ''}
+${actionHint}${domSummary}${kbSection}${mcpSection}
+Collected so far: ${JSON.stringify(collectedData)}
+${isLastStep ? 'FINAL STEP: use celebrate_milestone when done (not complete_step).' : ''}
+${verifyInstructions}${initInstructions}${generalInstructions}
+
+ABSOLUTE RULES:
+- Only use selectors that appear verbatim in LIVE PAGE ELEMENTS.
+- Never confirm, summarise, or ask "are you ready?".
+- Never call complete_step speculatively — only when the user has provably finished.
+- Keep all user-facing text under 25 words.
+${customInstructions ?? ''}`.trim();
+}
+
+// ─── Parse tool call → AgentAction ───────────────────────────────────────────
+function parseToolCall(name: string, input: Record<string, unknown>): AgentAction | null {
+  if (name === 'ask_clarification') {
+    return {
+      type: 'ask_clarification',
+      question: input.question as string,
+      options: input.options as string[] | undefined,
+    };
+  }
+
+  if (name === 'execute_page_action') {
+    const actionType = input.type as string;
+    let payload: Record<string, unknown>;
+
+    if (actionType === 'fill_form') {
+      payload = { fields: input.fields ?? {} };
+    } else if (actionType === 'navigate') {
+      payload = { url: input.url ?? '' };
+    } else if (actionType === 'highlight') {
+      payload = {
+        selector: input.selector ?? '',
+        mode: input.highlightMode ?? 'spotlight',
+        ...(input.highlightLabel    ? { label: input.highlightLabel } : {}),
+        ...(input.highlightSelectors ? { selectors: input.highlightSelectors } : {}),
+        ...(input.highlightLabels    ? { labels: input.highlightLabels } : {}),
+      };
+    } else {
+      payload = { selector: input.selector ?? '' };
+    }
+
+    return {
+      type: 'execute_page_action',
+      actionType,
+      payload,
+      message: input.message as string,
+      shouldVerify: (input.shouldVerify as boolean | undefined) ?? false,
+    };
+  }
+
+  if (name === 'complete_step') {
+    return {
+      type: 'complete_step',
+      message: input.message as string,
+      collectedData: input.collectedData as Record<string, unknown> | undefined,
+    };
+  }
+
+  if (name === 'celebrate_milestone') {
+    return {
+      type: 'celebrate_milestone',
+      headline: input.headline as string,
+      insight: input.insight as string,
+    };
+  }
+
+  if (name === 'escalate_to_human') {
+    return {
+      type: 'escalate_to_human',
+      reason: input.reason as string,
+      trigger: input.trigger as string,
+      message: input.message as string,
+    };
+  }
+
+  return null;
+}
+
+// ─── Streaming text extractor ─────────────────────────────────────────────────
+// Extracts the primary text field from a partially-built JSON argument string
+// so we can stream words to the client before the full tool call is done.
+function extractStreamingText(argsSoFar: string, toolName: string): string {
+  let fieldName: string;
+  if (toolName === 'ask_clarification') fieldName = 'question';
+  else if (toolName === 'chat') fieldName = 'content';
+  else if (toolName === 'celebrate_milestone') fieldName = 'headline';
+  else return '';
+
+  const key = `"${fieldName}":`;
+  const keyIdx = argsSoFar.indexOf(key);
+  if (keyIdx === -1) return '';
+
+  // Find opening quote of the value
+  let valueStart = argsSoFar.indexOf('"', keyIdx + key.length);
+  if (valueStart === -1) return '';
+  valueStart++; // skip the opening quote
+
+  // Read until unescaped closing quote (or end of buffer)
+  let text = '';
+  let i = valueStart;
+  while (i < argsSoFar.length) {
+    const c = argsSoFar[i];
+    if (c === '\\' && i + 1 < argsSoFar.length) {
+      const next = argsSoFar[i + 1];
+      if (next === '"') text += '"';
+      else if (next === 'n') text += '\n';
+      else if (next === 't') text += '\t';
+      else text += next;
+      i += 2;
+    } else if (c === '"') {
+      break;
+    } else {
+      text += c;
+      i++;
+    }
+  }
+  return text;
+}
+
+// ─── Shared agent setup (input processing before calling OpenAI) ───────────────
+async function prepareAgentCall(opts: {
+  org: Organization;
+  step: OnboardingStep;
+  userMessage: string;
+  collectedData: Record<string, unknown>;
+  conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>;
+  isLastStep: boolean;
+  pageContext?: PageContext;
+  userHistoryFormatted?: string;
+  userMetadata?: Record<string, unknown>;
+}) {
+  const {
+    org, step, userMessage, collectedData, conversationHistory,
+    isLastStep, pageContext, userHistoryFormatted, userMetadata,
+  } = opts;
+
+  const isInit   = userMessage === '__init__';
+  const isVerify = userMessage === '__verify__';
+
+  const smartQuestions      = (step.smartQuestions as string[]) ?? [];
+  const answeredQuestions   = Object.keys(collectedData);
+  const unansweredQuestions = smartQuestions.filter((q) => !answeredQuestions.includes(q));
+
+  const actionConfig    = step.actionConfig as Record<string, unknown> | null;
+  const hasActionConfig = !!(actionConfig && Object.keys(actionConfig).length > 0);
+
+  const actionHint = hasActionConfig
+    ? `\nPRE-CONFIGURED ACTION (use these exact values with execute_page_action):
+- type: "${step.actionType || 'highlight'}"
+${actionConfig!.selector ? `- selector: "${actionConfig!.selector}"` : ''}
+${actionConfig!.url      ? `- url: "${actionConfig!.url}"` : ''}
+${actionConfig!.fields   ? `- fields: ${JSON.stringify(actionConfig!.fields)} (replace empty strings with values from collectedData or user answer)` : ''}\n`
+    : '';
+
+  const domSummary = pageContext && pageContext.elements.length > 0
+    ? `\nLIVE PAGE ELEMENTS (verified selectors — only use these):
+Page: ${pageContext.title} (${pageContext.url})
+${pageContext.headings.length ? `Headings: ${pageContext.headings.join(' | ')}` : ''}
+Interactive elements:
+${pageContext.elements.map((e) =>
+  `  [${e.tag}${e.type ? `[${e.type}]` : ''}] selector="${e.selector}" label="${e.text}"${e.value ? ` value="${e.value}"` : ''}`
+).join('\n')}\n`
+    : '';
+
+  // Skip KB search on init/verify turns — race with 1.5 s timeout
+  const kbResults = (isInit || isVerify)
+    ? []
+    : await Promise.race([
+        searchKnowledgeBase(org.id, userMessage).catch(() => []),
+        new Promise<Awaited<ReturnType<typeof searchKnowledgeBase>>>((resolve) =>
+          setTimeout(() => resolve([]), 1500)
+        ),
+      ]);
+
+  const kbSection = kbResults.length > 0
+    ? `\nKNOWLEDGE BASE:\n${kbResults.map((r) => `[${r.title}]\n${r.content.slice(0, 500)}`).join('\n\n')}\n`
+    : '';
+
+  // ── MCP tools ────────────────────────────────────────────────────────────────
+  // Load enabled connectors and their tool lists in parallel with the KB search.
+  // Skip on init/verify turns (no real user query to dispatch against).
+  const mcpBundles: ConnectorToolBundle[] = (isInit || isVerify)
+    ? []
+    : await loadMcpTools(org.id).catch(() => []);
+
+  const mcpOAITools = toOpenAITools(mcpBundles);
+
+  const mcpSection = mcpBundles.length > 0
+    ? `\nMCP TOOLS AVAILABLE: You have ${mcpOAITools.length} external tool(s) from ${mcpBundles.length} connector(s). Use them when they help complete this step.\n`
+    : '';
+
+  const model = selectModel({
+    isInit,
+    isVerify,
+    hasActionConfig,
+    hasUnansweredQuestions: unansweredQuestions.length > 0,
+    hasKbResults: kbResults.length > 0,
+  });
+
+  const systemPrompt = buildSystemPrompt({
+    orgName: org.name,
+    customInstructions: org.customInstructions,
+    step,
+    collectedData,
+    isLastStep,
+    userMetadata,
+    userHistoryFormatted,
+    domSummary,
+    kbSection,
+    mcpSection,
+    isInit,
+    isVerify,
+    unansweredQuestions,
+    actionHint,
+  });
+
+  const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
+    ...conversationHistory.slice(-10),
+    { role: 'user', content: userMessage },
+  ];
+
+  // ── Guardrails: filter tools by step.allowedActions ─────────────────────────
+  const allowedActions = (step.allowedActions as string[] | undefined) ?? [];
+  let baseTools: OpenAI.Chat.ChatCompletionTool[];
+  if (allowedActions.length === 0) {
+    baseTools = AGENT_TOOLS;
+  } else {
+    baseTools = AGENT_TOOLS.reduce<OpenAI.Chat.ChatCompletionTool[]>((acc, tool) => {
+      if (tool.function.name !== 'execute_page_action') {
+        acc.push(tool);
+        return acc;
+      }
+      const params = tool.function.parameters as Record<string, unknown>;
+      const props  = params.properties as Record<string, { type: string; enum?: string[] }>;
+      const filteredEnum = (props.type.enum ?? []).filter((t) => allowedActions.includes(t));
+      if (filteredEnum.length === 0) return acc;
+      acc.push({
+        ...tool,
+        function: {
+          ...tool.function,
+          parameters: {
+            ...params,
+            properties: { ...props, type: { ...props.type, enum: filteredEnum } },
+          },
+        },
+      });
+      return acc;
+    }, []);
+  }
+
+  // Append MCP tools after built-in tools
+  const toolsForStep = [...baseTools, ...mcpOAITools];
+
+  return { model, systemPrompt, messages, toolsForStep, mcpBundles, collectedData, isInit, isVerify };
+}
+
+// ─── Handle MCP tool call + follow-up turn ────────────────────────────────────
+async function handleMcpCall(
+  call: OpenAI.Chat.ChatCompletionMessageToolCall,
+  mcpBundles: ConnectorToolBundle[],
+  systemPrompt: string,
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>,
+  toolsForStep: OpenAI.Chat.ChatCompletionTool[],
+  model: string,
+): Promise<AgentAction> {
+  const resolved = resolveMcpCall(call.function.name, mcpBundles);
+  if (!resolved) {
+    return { type: 'chat', content: 'Could not resolve MCP tool call.' };
+  }
+
+  const args = JSON.parse(call.function.arguments) as Record<string, unknown>;
+  const result = await callMcpTool(resolved.connector, resolved.mcpToolName, args);
+
+  const resultText = result.content.map((c) => c.text).join('\n');
+
+  const followUpMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+    ...messages,
+    { role: 'assistant' as const, content: null, tool_calls: [call] },
+    { role: 'tool' as const, tool_call_id: call.id, content: resultText },
+  ];
+
+  const followUp = await withRetry(
+    () => openai.chat.completions.create({
+      model: 'gpt-4o',
+      max_tokens: 1500,
+      temperature: 0,
+      // Remove MCP tools from follow-up to avoid infinite loops
+      tools: toolsForStep.filter((t) => !t.function.name.startsWith('mcp__')),
+      tool_choice: 'required',
+      messages: [{ role: 'system', content: systemPrompt }, ...followUpMessages],
+    }),
+    { retries: 2, delayMs: 800, label: 'agent.mcp_followup' }
+  );
+
+  const fc = followUp.choices[0].message.tool_calls?.[0];
+  if (fc) {
+    const action = parseToolCall(fc.function.name, JSON.parse(fc.function.arguments));
+    if (action) return action;
+  }
+
+  return { type: 'chat', content: followUp.choices[0].message.content ?? 'Tool call completed.' };
+}
+
+// ─── Core agent (non-streaming) ───────────────────────────────────────────────
 
 export async function runAgent(opts: {
   org: Organization;
@@ -221,171 +540,51 @@ export async function runAgent(opts: {
   isLastStep: boolean;
   pageContext?: PageContext;
   userHistoryFormatted?: string;
+  userMetadata?: Record<string, unknown>;
 }): Promise<AgentAction> {
-  const { org, step, userMessage, collectedData, conversationHistory, isLastStep, pageContext, userHistoryFormatted } = opts;
-
-  const smartQuestions = (step.smartQuestions as string[]) ?? [];
-  const answeredQuestions = Object.keys(collectedData);
-  const unansweredQuestions = smartQuestions.filter((q) => !answeredQuestions.includes(q));
-
-  const actionConfig = step.actionConfig as Record<string, unknown> | null;
-  const hasActionConfig = actionConfig && Object.keys(actionConfig).length > 0;
-  const actionHint = hasActionConfig
-    ? `\nPage action config for this step (use execute_page_action with these exact values):
-- type: "${step.actionType || 'highlight'}"
-${actionConfig!.selector ? `- selector: "${actionConfig!.selector}"` : ''}
-${actionConfig!.url ? `- url: "${actionConfig!.url}"` : ''}
-${actionConfig!.fields ? `- fields: ${JSON.stringify(actionConfig!.fields)} (replace empty string values with what the user told you — use collectedData)` : ''}`
-    : '';
-
-  const isInit = userMessage === '__init__';
-
-  // Search knowledge base for relevant context (skip on __init__ — no real user query yet)
-  const kbResults = isInit ? [] : await searchKnowledgeBase(org.id, userMessage).catch(() => []);
-  const kbSection = kbResults.length > 0
-    ? `\nKNOWLEDGE BASE (use this to answer questions or guide the user through this step):\n${
-        kbResults.map((r) => `[${r.title}]\n${r.content.slice(0, 600)}`).join('\n\n')
-      }`
-    : '';
-
-  // Build a compact element map from the live page so the agent can pick real selectors
-  const domSummary = pageContext && pageContext.elements.length > 0
-    ? `\nLIVE PAGE ELEMENTS (use these selectors — they are real and verified on the current page):
-Page: ${pageContext.title} (${pageContext.url})
-${pageContext.headings.length ? `Headings: ${pageContext.headings.join(' | ')}` : ''}
-Interactive elements:
-${pageContext.elements.map((e) =>
-  `  [${e.tag}${e.type ? `[${e.type}]` : ''}] selector="${e.selector}" label="${e.text}"`
-).join('\n')}
-When calling execute_page_action, ALWAYS use selectors from this list. Do not invent selectors.`
-    : '';
-
-  const systemPrompt = `You are an AI onboarding copilot inside "${org.name}". You ALWAYS call a tool — never respond with plain text.
-${userHistoryFormatted ? `\n${userHistoryFormatted}\n` : ''}
-CURRENT STEP: "${step.title}"
-Description: ${step.description || ''}
-${step.aiPrompt ? `Instructions: ${step.aiPrompt}` : ''}
-${actionHint}${domSummary}${kbSection}
-Collected so far: ${JSON.stringify(collectedData)}
-${isLastStep ? 'FINAL STEP: call celebrate_milestone when done.' : ''}
-
-DECISION RULES — follow in order:
-1. If this is the __init__ trigger AND actionConfig has a selector/url → call execute_page_action immediately with those values.
-2. If this is the __init__ trigger AND there are unanswered smart questions → call ask_clarification with the first one: ${unansweredQuestions[0] ?? 'none'}.
-3. If this is the __init__ trigger AND no questions needed → call complete_step immediately.
-4. If user just answered a question AND actionConfig exists → call execute_page_action right now using the actionConfig values. Do not confirm first.
-5. If user just answered a question AND no actionConfig → call complete_step immediately with a short congratulation.
-6. If the step is done → ${isLastStep ? 'call celebrate_milestone' : 'call complete_step'}.
-7. If you need one more piece of info → call ask_clarification (max 1 question, include 2-4 options).
-
-NEVER: chat, explain, confirm back what you're doing, or ask if the user is ready. Just act.
-${org.customInstructions ?? ''}`.trim();
-
-  const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
-    ...conversationHistory.slice(-6), // keep last 6 messages for context
-    { role: 'user', content: userMessage },
-  ];
+  const { model, systemPrompt, messages, toolsForStep, mcpBundles, collectedData } = await prepareAgentCall(opts);
 
   const response = await withRetry(
     () => openai.chat.completions.create({
-      model: 'gpt-4o',
-      max_tokens: 512,
-      tools: AGENT_TOOLS,
+      model,
+      max_tokens: model === 'gpt-4o-mini' ? 512 : 1500,
+      temperature: 0,
+      tools: toolsForStep,
       tool_choice: 'required',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        ...messages,
-      ],
+      messages: [{ role: 'system', content: systemPrompt }, ...messages],
     }),
-    { retries: 2, delayMs: 800, label: `agent.openai org=${org.id}` }
+    { retries: 2, delayMs: 800, label: `agent.openai org=${opts.org.id}` }
   );
 
   const msg = response.choices[0].message;
+  logger.agentAction(opts.org.id, 'n/a', msg.tool_calls?.[0]?.function?.name ?? 'none', {
+    stepId: opts.step.id,
+    model,
+    tokens: response.usage?.total_tokens,
+  });
 
-  // ─── Parse tool calls ─────────────────────────────────────────────────────
   if (msg.tool_calls && msg.tool_calls.length > 0) {
-    const call = msg.tool_calls[0];
-    const name = call.function.name;
-    logger.agentAction(org.id, 'n/a', name, { stepId: step.id, stepTitle: step.title });
+    const call  = msg.tool_calls[0];
+    const name  = call.function.name;
     const input = JSON.parse(call.function.arguments) as Record<string, unknown>;
 
-    if (name === 'ask_clarification') {
-      return {
-        type: 'ask_clarification',
-        question: input.question as string,
-        options: input.options as string[] | undefined,
-      };
+    // ── MCP tool call ──────────────────────────────────────────────────────────
+    if (name.startsWith('mcp__')) {
+      return handleMcpCall(call, mcpBundles, systemPrompt, messages, toolsForStep, model);
     }
 
-    if (name === 'execute_page_action') {
-      const actionType = input.type as string;
-      // Build payload from flat fields (GPT-4o doesn't nest into a payload object)
-      let payload: Record<string, unknown>;
-      if (actionType === 'fill_form') {
-        payload = { fields: input.fields ?? {} };
-      } else if (actionType === 'navigate') {
-        payload = { url: input.url ?? '' };
-      } else if (actionType === 'highlight') {
-        payload = {
-          selector: input.selector ?? '',
-          mode: input.highlightMode ?? 'spotlight',
-          ...(input.highlightLabel   ? { label: input.highlightLabel } : {}),
-          ...(input.highlightSelectors ? { selectors: input.highlightSelectors } : {}),
-          ...(input.highlightLabels    ? { labels: input.highlightLabels } : {}),
-        };
-      } else {
-        // click
-        payload = { selector: input.selector ?? '' };
-      }
-      return {
-        type: 'execute_page_action',
-        actionType,
-        payload,
-        message: input.message as string,
-      };
-    }
-
-    if (name === 'complete_step') {
-      return {
-        type: 'complete_step',
-        message: input.message as string,
-        collectedData: input.collectedData as Record<string, unknown> | undefined,
-      };
-    }
-
-    if (name === 'celebrate_milestone') {
-      return {
-        type: 'celebrate_milestone',
-        headline: input.headline as string,
-        insight: input.insight as string,
-      };
-    }
-
-    if (name === 'escalate_to_human') {
-      return {
-        type: 'escalate_to_human',
-        reason: input.reason as string,
-        trigger: input.trigger as string,
-        message: input.message as string,
-      };
-    }
-
+    // ── call_api tool call ─────────────────────────────────────────────────────
     if (name === 'call_api') {
-      // Interpolate {{variable}} placeholders in body using collectedData
-      const rawBody = input.body as Record<string, unknown> | undefined;
-      const resolvedBody = rawBody
-        ? interpolate(rawBody, collectedData) as Record<string, unknown>
-        : undefined;
+      const rawBody      = input.body as Record<string, unknown> | undefined;
+      const resolvedBody = rawBody ? interpolate(rawBody, collectedData) as Record<string, unknown> : undefined;
 
       const apiResult = await executeApiCall({
-        url: input.url as string,
-        method: (input.method as string ?? 'GET') as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+        url:     input.url as string,
+        method:  (input.method as string ?? 'GET') as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
         headers: input.headers as Record<string, string> | undefined,
-        body: resolvedBody,
+        body:    resolvedBody,
       });
 
-      // Feed the API result back to the model and get a final action
-      // Use AGENT_TOOLS_NO_API to prevent infinite call_api loops
       const followUpMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
         ...messages,
         { role: 'assistant' as const, content: null, tool_calls: [call] },
@@ -401,67 +600,191 @@ ${org.customInstructions ?? ''}`.trim();
         },
       ];
 
-      const followUp = await openai.chat.completions.create({
-        model: 'gpt-4o',
-        max_tokens: 512,
-        tools: AGENT_TOOLS_NO_API,
-        tool_choice: 'required',
-        messages: [{ role: 'system', content: systemPrompt }, ...followUpMessages],
-      });
+      const followUp = await withRetry(
+        () => openai.chat.completions.create({
+          model: 'gpt-4o',
+          max_tokens: 1500,
+          temperature: 0,
+          tools: toolsForStep.filter((t) => t.function.name !== 'call_api'),
+          tool_choice: 'required',
+          messages: [{ role: 'system', content: systemPrompt }, ...followUpMessages],
+        }),
+        { retries: 2, delayMs: 800, label: `agent.call_api_followup org=${opts.org.id}` }
+      );
 
-      const followUpMsg = followUp.choices[0].message;
-      if (followUpMsg.tool_calls && followUpMsg.tool_calls.length > 0) {
-        const fc = followUpMsg.tool_calls[0];
-        const fname = fc.function.name;
-        const finput = JSON.parse(fc.function.arguments) as Record<string, unknown>;
-
-        if (fname === 'ask_clarification') {
-          return { type: 'ask_clarification', question: finput.question as string, options: finput.options as string[] | undefined };
-        }
-        if (fname === 'execute_page_action') {
-          const at = finput.type as string;
-          let fp: Record<string, unknown>;
-          if (at === 'fill_form') {
-            fp = { fields: finput.fields ?? {} };
-          } else if (at === 'navigate') {
-            fp = { url: finput.url ?? '' };
-          } else if (at === 'highlight') {
-            fp = {
-              selector: finput.selector ?? '',
-              mode: finput.highlightMode ?? 'spotlight',
-              ...(finput.highlightLabel     ? { label: finput.highlightLabel } : {}),
-              ...(finput.highlightSelectors ? { selectors: finput.highlightSelectors } : {}),
-              ...(finput.highlightLabels    ? { labels: finput.highlightLabels } : {}),
-            };
-          } else {
-            fp = { selector: finput.selector ?? '' };
-          }
-          return { type: 'execute_page_action', actionType: at, payload: fp, message: finput.message as string };
-        }
-        if (fname === 'complete_step') {
-          return { type: 'complete_step', message: finput.message as string, collectedData: finput.collectedData as Record<string, unknown> | undefined };
-        }
-        if (fname === 'celebrate_milestone') {
-          return { type: 'celebrate_milestone', headline: finput.headline as string, insight: finput.insight as string };
-        }
-
+      const fc = followUp.choices[0].message.tool_calls?.[0];
+      if (fc) {
+        const action = parseToolCall(fc.function.name, JSON.parse(fc.function.arguments));
+        if (action) return action;
       }
 
-      const fallback = followUpMsg.content ?? 'API call completed.';
-      return { type: 'chat', content: fallback };
+      return { type: 'chat', content: followUp.choices[0].message.content ?? 'API call completed.' };
+    }
+
+    const action = parseToolCall(name, input);
+    if (action) return action;
+  }
+
+  return { type: 'chat', content: msg.content ?? 'Let me help you with that.' };
+}
+
+// ─── Streaming agent — yields word tokens then the final action ───────────────
+// Uses GPT-4o native streaming. Words are extracted from the JSON argument
+// string as it builds so the user sees text appear immediately rather than
+// waiting for the full tool call to complete.
+//
+// Yields: { type: 'word', word: string } | { type: 'action', action: AgentAction }
+
+export async function* runAgentStream(
+  opts: Parameters<typeof runAgent>[0],
+): AsyncGenerator<{ type: 'word'; word: string } | { type: 'action'; action: AgentAction }> {
+  const { model, systemPrompt, messages, toolsForStep, mcpBundles, collectedData } = await prepareAgentCall(opts);
+
+  // call_api and mcp__ calls need a follow-up turn — fall back to non-streaming
+  // for those to keep the code paths simple. They're rare and fast.
+  const stream = await openai.chat.completions.create({
+    model,
+    max_tokens: model === 'gpt-4o-mini' ? 512 : 1500,
+    temperature: 0,
+    tools: toolsForStep,
+    tool_choice: 'required',
+    messages: [{ role: 'system', content: systemPrompt }, ...messages],
+    stream: true,
+  });
+
+  let toolName = '';
+  let argsSoFar = '';
+  let yieldedTextLength = 0;
+  // Accumulate the final message ourselves since there's no .finalMessage()
+  let finishReason = '';
+  const accToolCalls: Array<{
+    id: string;
+    function: { name: string; arguments: string };
+    type: 'function';
+  }> = [];
+
+  for await (const chunk of stream) {
+    const choice = chunk.choices[0];
+    if (!choice) continue;
+    if (choice.finish_reason) finishReason = choice.finish_reason;
+
+    const delta = choice.delta;
+    if (!delta?.tool_calls?.[0]) continue;
+
+    const tc = delta.tool_calls[0];
+    const idx = tc.index ?? 0;
+
+    // Accumulate tool call
+    if (!accToolCalls[idx]) {
+      accToolCalls[idx] = { id: tc.id ?? '', function: { name: '', arguments: '' }, type: 'function' };
+    }
+    if (tc.id) accToolCalls[idx].id = tc.id;
+    if (tc.function?.name) accToolCalls[idx].function.name += tc.function.name;
+    if (tc.function?.arguments) accToolCalls[idx].function.arguments += tc.function.arguments;
+
+    // Track current tool for text extraction
+    if (tc.function?.name) toolName += tc.function.name;
+    if (tc.function?.arguments) {
+      argsSoFar += tc.function.arguments;
+
+      // Stream words from the primary text field as the JSON builds
+      const currentText = extractStreamingText(argsSoFar, toolName);
+      if (currentText.length > yieldedTextLength) {
+        const newChars = currentText.slice(yieldedTextLength);
+        yieldedTextLength = currentText.length;
+
+        // Split on spaces — yield complete words only
+        const words = newChars.split(' ');
+        for (let i = 0; i < words.length; i++) {
+          const word = words[i];
+          if (!word) continue;
+          // Last segment may be mid-word — hold it for the next chunk
+          if (i === words.length - 1 && !newChars.endsWith(' ')) {
+            yieldedTextLength -= word.length; // re-wind so we re-stream it
+            break;
+          }
+          yield { type: 'word', word: word + ' ' };
+        }
+      }
     }
   }
 
-  // ─── Fallback: plain text response ───────────────────────────────────────
-  const content = msg.content ?? "Let me help you with that step.";
-  return { type: 'chat', content };
+  // Build action from accumulated streaming state
+  const call = accToolCalls[0];
+
+  logger.agentAction(opts.org.id, 'n/a', call?.function?.name ?? 'none', {
+    stepId: opts.step.id,
+    model,
+    streaming: true,
+  });
+
+  if (!call) {
+    yield { type: 'action', action: { type: 'chat', content: '' } };
+    return;
+  }
+
+  const name  = call.function.name;
+  const input = JSON.parse(call.function.arguments) as Record<string, unknown>;
+
+  // MCP and call_api follow-up turns — resolve synchronously now
+  if (name.startsWith('mcp__')) {
+    const action = await handleMcpCall(
+      call as OpenAI.Chat.ChatCompletionMessageToolCall,
+      mcpBundles, systemPrompt, messages, toolsForStep, model,
+    );
+    yield { type: 'action', action };
+    return;
+  }
+
+  if (name === 'call_api') {
+    const rawBody      = input.body as Record<string, unknown> | undefined;
+    const resolvedBody = rawBody ? interpolate(rawBody, collectedData) as Record<string, unknown> : undefined;
+
+    const apiResult = await executeApiCall({
+      url:     input.url as string,
+      method:  (input.method as string ?? 'GET') as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+      headers: input.headers as Record<string, string> | undefined,
+      body:    resolvedBody,
+    });
+
+    const oaiCall = call as OpenAI.Chat.ChatCompletionMessageToolCall;
+    const followUpMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+      ...messages,
+      { role: 'assistant' as const, content: null, tool_calls: [oaiCall] },
+      {
+        role: 'tool' as const,
+        tool_call_id: oaiCall.id,
+        content: JSON.stringify({ ok: apiResult.ok, status: apiResult.status, data: apiResult.data }),
+      },
+    ];
+
+    const followUp = await withRetry(
+      () => openai.chat.completions.create({
+        model: 'gpt-4o',
+        max_tokens: 1500,
+        temperature: 0,
+        tools: toolsForStep.filter((t) => t.function.name !== 'call_api'),
+        tool_choice: 'required',
+        messages: [{ role: 'system', content: systemPrompt }, ...followUpMessages],
+      }),
+      { retries: 2, delayMs: 800, label: `agent.call_api_followup org=${opts.org.id}` }
+    );
+
+    const fc = followUp.choices[0].message.tool_calls?.[0];
+    const action = fc
+      ? (parseToolCall(fc.function.name, JSON.parse(fc.function.arguments)) ?? { type: 'chat' as const, content: '' })
+      : { type: 'chat' as const, content: followUp.choices[0].message.content ?? 'API call completed.' };
+
+    yield { type: 'action', action };
+    return;
+  }
+
+  const action = parseToolCall(name, input);
+  yield { type: 'action', action: action ?? { type: 'chat', content: 'Let me help you with that.' } };
 }
 
-/**
- * Wraps runAgent with a catch-all fallback.
- * If the AI fails after all retries, the user sees manual instructions
- * instead of a broken/empty widget.
- */
+// ─── Safe wrapper ─────────────────────────────────────────────────────────────
+
 export async function runAgentSafe(
   opts: Parameters<typeof runAgent>[0] & { sessionId?: string }
 ): Promise<AgentAction> {
@@ -473,13 +796,13 @@ export async function runAgentSafe(
       fallback: true,
     });
 
-    const manualGuide = opts.step.description
-      ? `Here's how to complete this step manually:\n\n${opts.step.description}`
-      : `I'm having trouble right now. Please try: ${opts.step.title}`;
+    const fallbackText = opts.step.description
+      ? `Here's how to do this step manually:\n\n${opts.step.description}`
+      : `I'm having trouble. Please try: ${opts.step.title}`;
 
     return {
       type: 'ask_clarification',
-      question: manualGuide,
+      question: fallbackText,
       options: ['Got it, continue', 'I need more help'],
     };
   }

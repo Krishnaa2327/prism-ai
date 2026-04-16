@@ -42,18 +42,20 @@ export async function handleMessage(
   conversationId: string,
   userMessage: string
 ): Promise<{ messageId: string; content: string; tokensUsed: number }> {
-  // 1. Load conversation with last 10 messages (context window)
+  // 1. Load conversation with last 10 messages (context window).
+  // Order desc + take 10 → most recent 10, then reverse to restore chronological order.
   const conversation = await prisma.conversation.findUniqueOrThrow({
     where: { id: conversationId },
     include: {
       messages: {
-        orderBy: { createdAt: 'asc' },
+        orderBy: { createdAt: 'desc' },
         take: 10,
       },
       endUser: true,
       organization: true,
     },
   });
+  conversation.messages.reverse();
 
   // 2. Build system prompt
   const systemPrompt = buildSystemPrompt(
@@ -116,15 +118,16 @@ export async function handleMessageStreaming(
     data: { conversationId, role: 'user', content: userMessage },
   });
 
-  // 2. Load conversation context
+  // 2. Load conversation context — desc + reverse to get the most recent 10 in order.
   const conversation = await prisma.conversation.findUniqueOrThrow({
     where: { id: conversationId },
     include: {
-      messages: { orderBy: { createdAt: 'asc' }, take: 10 },
+      messages: { orderBy: { createdAt: 'desc' }, take: 10 },
       endUser: true,
       organization: true,
     },
   });
+  conversation.messages.reverse();
 
   const systemPrompt = buildSystemPrompt(conversation.organization, conversation.endUser);
 
