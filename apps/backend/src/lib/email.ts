@@ -113,6 +113,32 @@ export async function sendWelcomeEmail(params: {
   });
 }
 
+export async function sendContactEmail(params: {
+  name: string;
+  email: string;
+  company?: string;
+  useCase?: string;
+  message: string;
+}) {
+  if (!resend) {
+    console.warn('[email] RESEND_API_KEY not set — skipping contact email');
+    return;
+  }
+
+  await resend.emails.send({
+    from: FROM,
+    to: 'hello@useprism.ai',
+    replyTo: params.email,
+    subject: `Contact: ${params.name}${params.company ? ` (${params.company})` : ''}`,
+    html: `
+<p><strong>From:</strong> ${params.name} &lt;${params.email}&gt;</p>
+${params.company ? `<p><strong>Company:</strong> ${params.company}</p>` : ''}
+${params.useCase ? `<p><strong>Use case:</strong> ${params.useCase}</p>` : ''}
+<p><strong>Message:</strong></p>
+<p style="white-space:pre-wrap">${params.message}</p>`,
+  });
+}
+
 export async function sendZeroCompletionAlert(params: {
   to: string;
   orgName: string;

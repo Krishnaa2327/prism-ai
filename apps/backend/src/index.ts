@@ -25,6 +25,7 @@ import escalationsRoutes from './routes/escalations';
 import failuresRoutes from './routes/failures';
 import sessionsRoutes from './routes/sessions';
 import mcpRoutes from './routes/mcp';
+import contactRoutes from './routes/contact';
 import { prisma } from './lib/prisma';
 import { errorHandler } from './middleware/errorHandler';
 import { attachWebSocketServer } from './lib/websocket';
@@ -99,6 +100,7 @@ app.use('/api/v1/escalations', escalationsRoutes);
 app.use('/api/v1/failures', failuresRoutes);
 app.use('/api/v1/sessions', sessionsRoutes);
 app.use('/api/v1/mcp', mcpRoutes);
+app.use('/api/v1/contact', contactRoutes);
 
 app.get('/health', async (_req, res) => {
   try {
