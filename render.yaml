@@ -40,7 +40,7 @@ services:
   - type: web
     name: prism-landing
     runtime: static
-    rootDir: apps/landing
+    rootDir: Prism-Website
     buildCommand: npm install && npm run build
     staticPublishPath: out
     envVars:
