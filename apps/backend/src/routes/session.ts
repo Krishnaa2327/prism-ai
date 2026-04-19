@@ -136,36 +136,25 @@ router.post('/start', async (req: AuthenticatedRequest, res: Response) => {
     return;
   }
 
-  // ── MTU limit check ──────────────────────────────────────────────────────────
   const org = req.organization!;
   const plan = PLANS[org.planType] ?? PLANS.free;
+
+  // Upsert end user first (idempotent) — eliminates MTU TOCTOU race
+  const endUser = await getOrCreateEndUser(org.id, userId, metadata ?? {});
+
+  // MTU check after upsert: count is now accurate
   if (plan.mtuLimit > 0) {
-    // Check if this is a new user for this month
-    const monthStart = new Date();
-    monthStart.setDate(1);
-    monthStart.setHours(0, 0, 0, 0);
-
-    const existing = await prisma.endUser.findUnique({
-      where: { organizationId_externalId: { organizationId: org.id, externalId: userId } },
-      select: { lastSeenAt: true },
-    });
-
-    const isNewThisMonth = !existing || existing.lastSeenAt < monthStart;
-    if (isNewThisMonth) {
-      const mtuUsed = await getMtuUsage(org.id);
-      if (mtuUsed >= plan.mtuLimit) {
-        res.status(429).json({
-          error: 'Monthly Tracked User limit reached',
-          limit: plan.mtuLimit,
-          used: mtuUsed,
-          upgradeUrl: `${process.env.FRONTEND_URL ?? 'http://localhost:3000'}/settings/billing`,
-        });
-        return;
-      }
+    const mtuUsed = await getMtuUsage(org.id);
+    if (mtuUsed > plan.mtuLimit) {
+      res.status(429).json({
+        error: 'Monthly Tracked User limit reached',
+        limit: plan.mtuLimit,
+        used: mtuUsed,
+        upgradeUrl: `${process.env.FRONTEND_URL ?? 'http://localhost:3000'}/settings/billing`,
+      });
+      return;
     }
   }
-
-  const endUser = await getOrCreateEndUser(org.id, userId, metadata ?? {});
 
   // find the org's active flow
   const baseFlow = await prisma.onboardingFlow.findFirst({
@@ -707,6 +696,16 @@ router.post('/act', async (req: AuthenticatedRequest, res: Response) => {
     return;
   }
 
+  // ── Monthly message limit ────────────────────────────────────────────────────
+  const _monthStart = new Date(); _monthStart.setDate(1); _monthStart.setHours(0, 0, 0, 0);
+  const _msgUsed = await prisma.sessionMessage.count({
+    where: { session: { organizationId: req.organization!.id }, role: 'assistant', createdAt: { gte: _monthStart } },
+  });
+  if (_msgUsed >= req.organization!.monthlyMessageLimit) {
+    res.status(429).json({ error: 'Monthly message limit reached', limit: req.organization!.monthlyMessageLimit, used: _msgUsed });
+    return;
+  }
+
   const { session, conversationHistory } = await loadSessionContext(sessionId, req.organization!.id);
 
   if (session.status === 'completed') {
@@ -798,6 +797,16 @@ router.post('/act/stream', async (req: AuthenticatedRequest, res: Response) => {
   }
   if (userMessage.length > 2000) {
     res.status(400).json({ error: 'userMessage too long (max 2000 characters)' });
+    return;
+  }
+
+  // ── Monthly message limit ─────────────────────────────────────────────────
+  const _sMonthStart = new Date(); _sMonthStart.setDate(1); _sMonthStart.setHours(0, 0, 0, 0);
+  const _sMsgUsed = await prisma.sessionMessage.count({
+    where: { session: { organizationId: req.organization!.id }, role: 'assistant', createdAt: { gte: _sMonthStart } },
+  });
+  if (_sMsgUsed >= req.organization!.monthlyMessageLimit) {
+    res.status(429).json({ error: 'Monthly message limit reached', limit: req.organization!.monthlyMessageLimit, used: _sMsgUsed });
     return;
   }
 
@@ -941,6 +950,11 @@ router.post('/page-change', async (req: AuthenticatedRequest, res: Response) => 
 // If the current step has a matching completionEvent, auto-advance
 router.post('/event', async (req: AuthenticatedRequest, res: Response) => {
   const { sessionId, eventType } = req.body as { sessionId: string; eventType: string };
+
+  if (!sessionId || !eventType) {
+    res.status(400).json({ error: 'sessionId and eventType required' });
+    return;
+  }
 
   const session = await prisma.userOnboardingSession.findFirstOrThrow({
     where: { id: sessionId, organizationId: req.organization!.id },

@@ -162,7 +162,7 @@ export async function stripeWebhookHandler(req: Request, res: Response) {
     if (!organizationId) return;
 
     const priceId = subscription.items.data[0]?.price.id ?? '';
-    const planKey = planFromPriceId(priceId);
+    const planKey = planFromPriceId(priceId) ?? 'free';
     const plan = PLANS[planKey] ?? PLANS.free;
 
     await prisma.organization.update({
@@ -181,13 +181,30 @@ export async function stripeWebhookHandler(req: Request, res: Response) {
 
   switch (event.type) {
     case 'checkout.session.completed': {
-      // Link Stripe customer to our org on first checkout
       const session = event.data.object as import('stripe').Stripe.Checkout.Session;
       if (session.client_reference_id && session.customer) {
         await prisma.organization.update({
           where: { id: session.client_reference_id },
           data: { stripeCustomerId: session.customer as string },
         });
+        // Eagerly sync plan — don't rely solely on subscription.created event delivery
+        if (session.subscription) {
+          const sub = await stripe.subscriptions.retrieve(session.subscription as string);
+          const priceId = sub.items.data[0]?.price.id ?? '';
+          const planKey = planFromPriceId(priceId) ?? 'free';
+          const plan = PLANS[planKey] ?? PLANS.free;
+          await prisma.organization.update({
+            where: { id: session.client_reference_id },
+            data: {
+              stripeSubscriptionId: sub.id,
+              stripePriceId:        priceId,
+              planType:             planKey,
+              monthlyMessageLimit:  plan.monthlyMessageLimit,
+              subscriptionStatus:   sub.status,
+              currentPeriodEnd:     new Date(sub.current_period_end * 1000),
+            },
+          });
+        }
       }
       break;
     }

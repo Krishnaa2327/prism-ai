@@ -115,6 +115,7 @@ export async function searchKnowledgeBase(
   const articles = await prisma.knowledgeBaseArticle.findMany({
     where: { organizationId: orgId },
     select: { id: true, title: true, content: true, embedding: true },
+    take: 500,
   });
 
   if (articles.length === 0) return [];

@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import { OnboardingStep, Organization } from '@prisma/client';
 
 import { executeApiCall, interpolate } from './apicall';
+import { assertPublicUrl } from '../lib/ipGuard';
 import { searchKnowledgeBase } from './knowledge';
 import { loadMcpTools, toOpenAITools, callMcpTool, resolveMcpCall, ConnectorToolBundle } from './mcp';
 import { logger, withRetry } from '../lib/logger';
@@ -145,6 +146,11 @@ export interface PageContext {
   title: string;
   headings: string[];
   elements: Array<{ tag: string; selector: string; text: string; type?: string; value?: string }>;
+}
+
+// ─── DOM text sanitizer — strips newlines/control chars to prevent prompt injection ──
+function sanitizeDomText(text: string): string {
+  return text.replace(/[\r\n\t]+/g, ' ').replace(/[^\x20-\x7E]/g, '').slice(0, 120);
 }
 
 // ─── Model routing ────────────────────────────────────────────────────────────
@@ -382,11 +388,11 @@ ${actionConfig!.fields   ? `- fields: ${JSON.stringify(actionConfig!.fields)} (r
 
   const domSummary = pageContext && pageContext.elements.length > 0
     ? `\nLIVE PAGE ELEMENTS (verified selectors — only use these):
-Page: ${pageContext.title} (${pageContext.url})
-${pageContext.headings.length ? `Headings: ${pageContext.headings.join(' | ')}` : ''}
+Page: ${sanitizeDomText(pageContext.title)} (${pageContext.url})
+${pageContext.headings.length ? `Headings: ${pageContext.headings.map(sanitizeDomText).join(' | ')}` : ''}
 Interactive elements:
 ${pageContext.elements.map((e) =>
-  `  [${e.tag}${e.type ? `[${e.type}]` : ''}] selector="${e.selector}" label="${e.text}"${e.value ? ` value="${e.value}"` : ''}`
+  `  [${e.tag}${e.type ? `[${e.type}]` : ''}] selector="${sanitizeDomText(e.selector)}" label="${sanitizeDomText(e.text)}"${e.value ? ` value="${sanitizeDomText(e.value)}"` : ''}`
 ).join('\n')}\n`
     : '';
 
@@ -566,7 +572,12 @@ export async function runAgent(opts: {
   if (msg.tool_calls && msg.tool_calls.length > 0) {
     const call  = msg.tool_calls[0];
     const name  = call.function.name;
-    const input = JSON.parse(call.function.arguments) as Record<string, unknown>;
+    let input: Record<string, unknown>;
+    try {
+      input = JSON.parse(call.function.arguments) as Record<string, unknown>;
+    } catch {
+      return { type: 'chat', content: 'Let me help you with that.' };
+    }
 
     // ── MCP tool call ──────────────────────────────────────────────────────────
     if (name.startsWith('mcp__')) {
@@ -575,6 +586,9 @@ export async function runAgent(opts: {
 
     // ── call_api tool call ─────────────────────────────────────────────────────
     if (name === 'call_api') {
+      try { await assertPublicUrl(input.url as string); }
+      catch (err) { return { type: 'chat', content: `Cannot reach that URL: ${(err as Error).message}` }; }
+
       const rawBody      = input.body as Record<string, unknown> | undefined;
       const resolvedBody = rawBody ? interpolate(rawBody, collectedData) as Record<string, unknown> : undefined;
 
@@ -724,7 +738,13 @@ export async function* runAgentStream(
   }
 
   const name  = call.function.name;
-  const input = JSON.parse(call.function.arguments) as Record<string, unknown>;
+  let input: Record<string, unknown>;
+  try {
+    input = JSON.parse(call.function.arguments) as Record<string, unknown>;
+  } catch {
+    yield { type: 'action', action: { type: 'chat', content: 'Let me help you with that.' } };
+    return;
+  }
 
   // MCP and call_api follow-up turns — resolve synchronously now
   if (name.startsWith('mcp__')) {
@@ -737,6 +757,9 @@ export async function* runAgentStream(
   }
 
   if (name === 'call_api') {
+    try { await assertPublicUrl(input.url as string); }
+    catch (err) { yield { type: 'action', action: { type: 'chat', content: `Cannot reach that URL: ${(err as Error).message}` } }; return; }
+
     const rawBody      = input.body as Record<string, unknown> | undefined;
     const resolvedBody = rawBody ? interpolate(rawBody, collectedData) as Record<string, unknown> : undefined;
 

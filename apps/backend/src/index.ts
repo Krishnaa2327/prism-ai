@@ -37,9 +37,15 @@ if (missing.length > 0) {
   console.error(`[startup] Missing required env vars: ${missing.join(', ')}`);
   process.exit(1);
 }
+if (!process.env.ADMIN_SECRET) {
+  console.warn('[startup] ADMIN_SECRET not set — admin routes will return 503');
+}
 
 const app = express();
 const PORT = process.env.PORT ?? 4000;
+
+// ─── Health check (Render) ────────────────────────────────────────────────────
+app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
 // ─── Stripe webhook — MUST be before express.json() ─────────────────────────
 app.post(

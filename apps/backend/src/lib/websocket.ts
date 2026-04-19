@@ -61,6 +61,8 @@ export function attachWebSocketServer(httpServer: Server) {
       mode: null,
       subscribedConversationId: null,
     };
+    let wsCount = 0; let wsWindow = Date.now();
+    const WS_MAX = 30; const WS_WIN = 60_000;
 
     // Send protocol version so clients can check compatibility
     ws.send(JSON.stringify({ type: 'connected', version: '1.0' }));
@@ -125,6 +127,12 @@ export function attachWebSocketServer(httpServer: Server) {
 
       // ── 3. Widget sends a user message → stream AI response ──────────────
       if (msg.type === 'message') {
+        const now = Date.now();
+        if (now - wsWindow > WS_WIN) { wsCount = 0; wsWindow = now; }
+        if (++wsCount > WS_MAX) {
+          ws.send(JSON.stringify({ type: 'error', message: 'Rate limit exceeded', code: 'RATE_LIMITED' }));
+          return;
+        }
         if (!state.authenticated || state.mode !== 'widget') {
           ws.send(JSON.stringify({ type: 'error', message: 'Not authenticated' }));
           return;

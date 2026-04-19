@@ -217,7 +217,7 @@ router.put('/:id/steps/:stepId', async (req: AuthenticatedRequest, res: Response
   } = req.body as Record<string, unknown>;
 
   const step = await prisma.onboardingStep.update({
-    where: { id: req.params.stepId },
+    where: { id: req.params.stepId, flowId: req.params.id },
     data: {
       ...(title !== undefined && { title: title as string }),
       ...(intent !== undefined && { intent: intent as string }),
@@ -239,7 +239,7 @@ router.delete('/:id/steps/:stepId', async (req: AuthenticatedRequest, res: Respo
   await prisma.onboardingFlow.findFirstOrThrow({
     where: { id: req.params.id, organizationId: req.user!.organizationId },
   });
-  await prisma.onboardingStep.delete({ where: { id: req.params.stepId } });
+  await prisma.onboardingStep.delete({ where: { id: req.params.stepId, flowId: req.params.id } });
   res.json({ deleted: true });
 });
 
