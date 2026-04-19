@@ -2,9 +2,47 @@
 
 Last updated: April 19, 2026
 
-## Honest Current State
+---
 
-Prism is currently a **flow runner with AI narration**, not a true autonomous agent.
+## Session Progress (April 19, 2026)
+
+### ✅ Completed this session
+
+#### India GTM — Phase 5
+- **INR pricing** — ₹0 / ₹7,999 / ₹24,999 / ₹79,999 live in `plans.ts`
+- **Plan feature gates** — `requireFeature()` middleware enforced at API level across all routes
+- **5 India vertical flow templates** — Payroll (PF/ESI/TDS), GST filing, Loan origination (NBFC), Payments/KYC (Razorpay-type), MSME accounting (Hinglish)
+- **Sarvam AI service** — `translateText`, `detectLanguage`, `transcribeAudio`, `synthesizeSpeech` for 9 Indian languages
+- **Sarvam wired into live request path** — language detection + translation in `/act` and `/act/stream`, `POST /session/stt`, `POST /session/tts`, language instruction in agent system prompt
+
+#### Agent Architecture — Phases 1–3
+- **Phase 1: ReAct agentic loop** — `runAgentGoal()` in `agent.ts`, `POST /session/act/goal` endpoint, `sendGoalMessage()` in widget `copilot.ts`, full loop orchestration in `widget.ts`. User types a free-form goal, widget drives Reason→Act→Observe→Reason loop until `goal_complete`.
+- **Phase 2: Semantic DOM layer** — `buildSemanticSummary()` in `scanner.ts` detects page type, wizard step, required/filled/optional fields, primary button state, validation errors. Sent alongside raw element list in goal-mode turns.
+- **Phase 3: Evaluation pipeline** — `apps/backend/tests/evals/` with 11 scenarios (3 payroll, 3 GST, 3 payments, 2 Hinglish). Runner wired to real `runAgentGoal()`. ≥85% pass rate CI gate. Run with `cd apps/backend && npm run eval` (needs `OPENAI_API_KEY`).
+
+### ⏳ Still to implement
+
+#### Agent Architecture
+- **Phase 4: Failure recovery stack** — retry with semantic fallback on selector failure, replan when page doesn't match expectation, graceful degradation to precise manual instruction before escalating
+- **Phase 5: Latency optimization** — DOM semantic parse widget-side (already done), planning call pre-warmed on widget init, KB+MCP P95 < 800ms verified, 8s hard cap per agent turn, first token < 400ms
+
+#### Operational (must do before any real client)
+- Set env vars on Render: `OPENAI_API_KEY`, `RESEND_API_KEY`, `SARVAM_API_KEY`, `FRONTEND_URL`, `NEXT_PUBLIC_DASHBOARD_URL`, `NEXT_PUBLIC_API_URL`
+- Rebuild and redeploy widget after today's changes (ReAct loop + semantic DOM are widget-side code)
+- Run eval suite once `OPENAI_API_KEY` is set — establish baseline pass rate
+
+#### Features (post-pilot)
+- Voice UI in widget (mic button + audio playback using the `/stt` and `/tts` endpoints already built)
+- PII masking in prompts and logs
+- SSO / SAML (Scale plan, gated but not built)
+- VPC / on-prem deployment option (Tier 3 BFSI requirement)
+- Recommend-only / approve-before-execute safe-action modes
+
+---
+
+## Honest Current State (start of session)
+
+Prism was a **flow runner with AI narration**, not a true autonomous agent.
 
 The LLM fills in words but the structure, sequence, and decisions are all pre-programmed via `aiPrompt` scripts per step. If a user does something unexpected, there is no real recovery. This is a legitimate v0 but it is not an agent.
 
