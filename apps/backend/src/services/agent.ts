@@ -140,7 +140,8 @@ export type AgentAction =
   | { type: 'celebrate_milestone'; headline: string; insight: string }
   | { type: 'call_api'; url: string; method: string; reason: string }
   | { type: 'escalate_to_human'; reason: string; trigger: string; message: string }
-  | { type: 'chat'; content: string };
+  | { type: 'chat'; content: string }
+  | { type: 'goal_complete'; summary: string };
 
 export interface PageContext {
   url: string;
@@ -313,6 +314,10 @@ function parseToolCall(name: string, input: Record<string, unknown>): AgentActio
       trigger: input.trigger as string,
       message: input.message as string,
     };
+  }
+
+  if (name === 'goal_complete') {
+    return { type: 'goal_complete', summary: input.summary as string };
   }
 
   return null;
@@ -815,6 +820,113 @@ export async function* runAgentStream(
 
   const action = parseToolCall(name, input);
   yield { type: 'action', action: action ?? { type: 'chat', content: 'Let me help you with that.' } };
+}
+
+// ─── Goal mode ────────────────────────────────────────────────────────────────
+
+export interface GoalTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export async function runAgentGoal(opts: {
+  org: Organization;
+  goal: string;
+  pageContext: PageContext;
+  turnHistory: GoalTurn[];
+  sessionId: string;
+}): Promise<AgentAction> {
+  const { org, goal, pageContext, turnHistory } = opts;
+
+  const goalCompleteTool: OpenAI.Chat.ChatCompletionTool = {
+    type: 'function',
+    function: {
+      name: 'goal_complete',
+      description: 'Call this when the user goal is fully achieved. Summarize what was accomplished.',
+      parameters: {
+        type: 'object',
+        properties: {
+          summary: { type: 'string', description: 'What was accomplished, under 20 words' },
+        },
+        required: ['summary'],
+      },
+    },
+  };
+
+  // Build domSummary the same way as prepareAgentCall
+  const domSummary = pageContext && pageContext.elements.length > 0
+    ? `\nLIVE PAGE ELEMENTS (verified selectors — only use these):
+Page: ${sanitizeDomText(pageContext.title)} (${pageContext.url})
+${pageContext.headings.length ? `Headings: ${pageContext.headings.map(sanitizeDomText).join(' | ')}` : ''}
+Interactive elements:
+${pageContext.elements.map((e) =>
+  `  [${e.tag}${e.type ? `[${e.type}]` : ''}] selector="${sanitizeDomText(e.selector)}" label="${sanitizeDomText(e.text)}"${e.value ? ` value="${sanitizeDomText(e.value)}"` : ''}`
+).join('\n')}\n`
+    : '';
+
+  const historyText = turnHistory.length === 0
+    ? 'None yet.'
+    : turnHistory.map((t, i) => `Turn ${i + 1} [${t.role}]: ${t.content}`).join('\n');
+
+  const systemPrompt = `You are Prism, an AI agent inside "${org.name}".
+
+GOAL: ${goal}
+
+TURN HISTORY (what you have done so far):
+${historyText}
+
+CURRENT PAGE:
+${domSummary}
+
+You must look at the current page and decide the single best next action to make progress toward the goal.
+
+RULES:
+- Call goal_complete ONLY when the goal is provably achieved based on what you can see on the page
+- Call ask_clarification ONLY when you genuinely cannot proceed without user input — one question max
+- Call escalate_to_human ONLY if you are completely stuck after multiple attempts
+- Only use selectors that appear verbatim in LIVE PAGE ELEMENTS
+- Keep all user-facing text under 25 words
+- Never repeat an action that already failed — try a different approach
+- Do not call complete_step or celebrate_milestone in goal mode — use goal_complete instead
+
+${org.customInstructions ?? ''}`.trim();
+
+  // Filter out call_api (too risky in autonomous mode)
+  const tools = [...AGENT_TOOLS, goalCompleteTool].filter((t) => t.function.name !== 'call_api');
+
+  const response = await withRetry(
+    () => openai().chat.completions.create({
+      model: 'gpt-4o',
+      max_tokens: 1500,
+      temperature: 0,
+      tools,
+      tool_choice: 'required',
+      messages: [{ role: 'system', content: systemPrompt }],
+    }),
+    { retries: 2, delayMs: 800, label: `agent.goal org=${org.id}` }
+  );
+
+  const msg = response.choices[0].message;
+  logger.agentAction(org.id, opts.sessionId, msg.tool_calls?.[0]?.function?.name ?? 'none', {
+    goalMode: true,
+    model: 'gpt-4o',
+    tokens: response.usage?.total_tokens,
+  });
+
+  if (msg.tool_calls && msg.tool_calls.length > 0) {
+    const call = msg.tool_calls[0];
+    let input: Record<string, unknown>;
+    try {
+      input = JSON.parse(call.function.arguments) as Record<string, unknown>;
+    } catch {
+      return { type: 'chat', content: 'Let me help you with that.' };
+    }
+
+    const action = parseToolCall(call.function.name, input);
+    if (action) return action;
+  }
+
+  return { type: 'chat', content: msg.content ?? 'Let me help you with that.' };
 }
 
 // ─── Safe wrapper ─────────────────────────────────────────────────────────────

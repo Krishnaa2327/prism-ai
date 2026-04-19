@@ -26,6 +26,13 @@ export class OnboardAIWidget {
   private socket: WidgetSocket | null = null;
   private copilot: CopilotManager;
 
+  // ─── Goal mode state ─────────────────────────────────────────────────────
+  private goalMode = false;
+  private goalText = '';
+  private goalTurnHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  private goalTurnCount = 0;
+  private goalRunning = false;
+
   // DOM refs
   private messagesEl!: HTMLElement;
   private inputEl!: HTMLTextAreaElement;
@@ -302,31 +309,118 @@ export class OnboardAIWidget {
     const content = this.inputEl.value.trim();
     if (!content || this.isSending) return;
 
-    this.isSending = true;
-    this.sendBtn.disabled = true;
     this.inputEl.value = '';
     this.inputEl.style.height = 'auto';
+
+    // ── Goal mode: user replied to an ask_clarification ──────────────────────
+    if (this.goalMode && !this.goalRunning) {
+      this.goalTurnHistory.push({ role: 'user', content });
+      this.goalRunning = true;
+      addMessage(this.messagesEl, content, 'user');
+      await this.runGoalTurn();
+      return;
+    }
+
+    this.isSending = true;
+    this.sendBtn.disabled = true;
+
+    const session = this.copilot.getSession();
+
+    // ── No active flow session — treat message as a goal ─────────────────────
+    if (!session) {
+      this.startGoalMode(content);
+      return;
+    }
 
     addMessage(this.messagesEl, content, 'user');
     const streamDiv = createStreamingBubble(this.messagesEl);
 
-    const session = this.copilot.getSession();
-    if (session) {
-      const result = await this.copilot.sendMessage(content, (word) => {
-        // Live text streaming — append words as they arrive
-        streamDiv.classList.remove('oai-streaming');
-        streamDiv.textContent = (streamDiv.textContent ?? '') + word;
-        this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
-      });
-      if (result) {
-        this.handleAgentAction(result.action, streamDiv, result.messageId);
-      } else {
-        streamDiv.textContent = 'Sorry, I had trouble responding. Please try again.';
-        this.finishStreaming(streamDiv);
-      }
+    const result = await this.copilot.sendMessage(content, (word) => {
+      // Live text streaming — append words as they arrive
+      streamDiv.classList.remove('oai-streaming');
+      streamDiv.textContent = (streamDiv.textContent ?? '') + word;
+      this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+    });
+    if (result) {
+      this.handleAgentAction(result.action, streamDiv, result.messageId);
     } else {
-      streamDiv.textContent = 'No active onboarding session. Please refresh the page.';
+      streamDiv.textContent = 'Sorry, I had trouble responding. Please try again.';
       this.finishStreaming(streamDiv);
+    }
+  }
+
+  // ─── Goal mode orchestration ─────────────────────────────────────────────
+
+  private async startGoalMode(goal: string) {
+    if (this.goalRunning) return;
+    this.goalMode = true;
+    this.goalText = goal;
+    this.goalTurnHistory = [];
+    this.goalTurnCount = 0;
+    this.goalRunning = true;
+
+    addMessage(this.messagesEl, goal, 'user');
+    await this.runGoalTurn();
+  }
+
+  private async runGoalTurn() {
+    if (!this.goalRunning) return;
+
+    const streamDiv = createStreamingBubble(this.messagesEl);
+    this.isSending = true;
+    this.sendBtn.disabled = true;
+
+    const result = await this.copilot.sendGoalMessage({
+      goal: this.goalText,
+      turnHistory: this.goalTurnHistory,
+      turnCount: this.goalTurnCount,
+    });
+
+    streamDiv.remove();
+    this.isSending = false;
+    this.sendBtn.disabled = false;
+
+    if (!result) {
+      addMessage(this.messagesEl, 'Something went wrong. Please try again.', 'assistant');
+      this.goalRunning = false;
+      return;
+    }
+
+    const { action, done, turnCount } = result;
+    this.goalTurnCount = turnCount;
+
+    // Record what the agent decided in turn history
+    const actionDesc = this.describeAction(action);
+    this.goalTurnHistory.push({ role: 'assistant', content: actionDesc });
+
+    // Handle the action in UI
+    this.handleAgentAction(action, document.createElement('div'), null);
+
+    if (done) {
+      this.goalRunning = false;
+      this.goalMode = false;
+      return;
+    }
+
+    // ReAct: observe — wait for DOM to settle after action, then loop
+    const delay = action.type === 'execute_page_action' ? 2000 : 500;
+    setTimeout(() => this.runGoalTurn(), delay);
+  }
+
+  private describeAction(action: AgentAction): string {
+    switch (action.type) {
+      case 'execute_page_action':
+        return `Executed ${action.actionType} action: ${action.message}`;
+      case 'ask_clarification':
+        return `Asked user: "${action.question}"`;
+      case 'complete_step':
+        return `Completed: ${action.message}`;
+      case 'goal_complete':
+        return `Goal achieved: ${action.summary}`;
+      case 'escalate_to_human':
+        return `Escalated: ${action.reason}`;
+      default:
+        return `Action: ${action.type}`;
     }
   }
 
@@ -406,6 +500,11 @@ export class OnboardAIWidget {
         if (messageId) {
           addFeedbackButtons(msgEl, (v) => this.copilot.sendFeedback(messageId, v));
         }
+        break;
+      }
+
+      case 'goal_complete': {
+        addCelebration(this.messagesEl, '✅ Done!', action.summary);
         break;
       }
     }

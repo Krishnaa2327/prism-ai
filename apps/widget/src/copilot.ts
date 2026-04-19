@@ -52,7 +52,8 @@ export type AgentAction =
   | { type: 'celebrate_milestone'; headline: string; insight: string }
   | { type: 'verify_integration'; integType: string; success: boolean; message: string }
   | { type: 'escalate_to_human'; reason: string; trigger: string; message: string }
-  | { type: 'chat'; content: string };
+  | { type: 'chat'; content: string }
+  | { type: 'goal_complete'; summary: string };
 
 export class CopilotManager {
   private apiKey: string;
@@ -392,6 +393,40 @@ export class CopilotManager {
       }
     } catch {
       // silent
+    }
+  }
+
+  getSessionId(): string | null {
+    return this.session?.id ?? null;
+  }
+
+  async sendGoalMessage(opts: {
+    goal: string;
+    turnHistory: Array<{ role: 'user' | 'assistant'; content: string }>;
+    turnCount: number;
+    onText?: (word: string) => void;
+  }): Promise<{ action: AgentAction; done: boolean; turnCount: number } | null> {
+    const { goal, turnHistory, turnCount } = opts;
+    const pageContext = scanPage();
+
+    try {
+      const res = await fetch(`${this.apiUrl}/api/v1/session/act/goal`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': this.apiKey },
+        body: JSON.stringify({
+          sessionId: this.session?.id ?? 'goal_session',
+          goal,
+          pageContext,
+          turnHistory,
+          turnCount,
+        }),
+      });
+      if (!res.ok) return null;
+      const data = await res.json() as { action: AgentAction; done: boolean; turnCount: number };
+      this.emit(data.action);
+      return data;
+    } catch {
+      return null;
     }
   }
 

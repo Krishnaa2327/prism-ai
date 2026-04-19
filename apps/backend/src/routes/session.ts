@@ -4,7 +4,7 @@ import { prisma } from '../lib/prisma';
 import { authenticateApiKey } from '../middleware/auth';
 import { getMtuUsage } from '../middleware/rateLimit';
 import { PLANS } from '../lib/plans';
-import { runAgentSafe, runAgentStream } from '../services/agent';
+import { runAgentSafe, runAgentStream, runAgentGoal, GoalTurn } from '../services/agent';
 import { detectIntent } from '../services/intent';
 import { detectLanguage, translateText, transcribeAudio, synthesizeSpeech, isSarvamEnabled } from '../services/sarvam';
 
@@ -940,6 +940,56 @@ router.post('/act/stream', async (req: AuthenticatedRequest, res: Response) => {
   } finally {
     res.end();
   }
+});
+
+// ─── POST /api/v1/session/act/goal — ReAct goal mode ─────────────────────────
+router.post('/act/goal', async (req: AuthenticatedRequest, res: Response) => {
+  const { sessionId, goal, pageContext, turnHistory = [], turnCount = 0 } = req.body as {
+    sessionId: string;
+    goal: string;
+    pageContext: import('../services/agent').PageContext;
+    turnHistory?: GoalTurn[];
+    turnCount?: number;
+  };
+
+  if (!sessionId || !goal) {
+    res.status(400).json({ error: 'sessionId and goal required' });
+    return;
+  }
+  if (goal.length > 500) {
+    res.status(400).json({ error: 'goal too long (max 500 chars)' });
+    return;
+  }
+  if (turnCount >= 12) {
+    res.status(200).json({
+      action: { type: 'escalate_to_human', reason: 'max_turns_reached', trigger: 'agent_detected', message: 'I\'ve tried several approaches. Let me connect you with a team member.' },
+      done: true,
+      turnCount,
+    });
+    return;
+  }
+
+  const action = await runAgentGoal({
+    org: req.organization!,
+    goal,
+    pageContext,
+    turnHistory,
+    sessionId,
+  });
+
+  const done = action.type === 'goal_complete' || action.type === 'escalate_to_human';
+
+  // Persist to audit log for traceability (SessionMessage requires stepId FK — skip it for goal mode)
+  prisma.auditLog.create({
+    data: {
+      organizationId: req.organization!.id,
+      sessionId,
+      actionType: action.type,
+      payload: { goal, turnCount, action } as import('@prisma/client').Prisma.InputJsonValue,
+    },
+  }).catch(() => {}); // non-blocking
+
+  res.json({ action, done, turnCount: turnCount + 1 });
 });
 
 // ─── POST /api/v1/session/stt ────────────────────────────────────────────────
