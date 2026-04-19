@@ -986,6 +986,7 @@ RULES:
 - Keep all user-facing text under 25 words
 - Never repeat an action that already failed — try a different approach
 - Do not call complete_step or celebrate_milestone in goal mode — use goal_complete instead
+- NEVER fill or read fields of type password, or whose name/label contains: password, ssn, social security, credit card, card number, cvv, cvc, or pin — skip them entirely
 
 ${org.customInstructions ?? ''}${failureContextBlock}`.trim();
 

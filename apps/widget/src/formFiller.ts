@@ -36,11 +36,24 @@ export class FormFiller {
   scan(): boolean {
     this.matches = [];
 
+    const SENSITIVE_NAME_RE = /password|passwd|secret|ssn|social.?security|credit.?card|card.?number|cvv|cvc|pin\b/i;
+    const SENSITIVE_AC = new Set([
+      'current-password', 'new-password', 'cc-number', 'cc-csc',
+      'cc-exp', 'cc-exp-month', 'cc-exp-year', 'cc-name',
+    ]);
+
     const fields = Array.from(
-      document.querySelectorAll('input:not([type=hidden]):not([type=submit]):not([type=button]), textarea, select')
+      document.querySelectorAll(
+        'input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=password]), textarea, select'
+      )
     ) as Array<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>;
 
     for (const el of fields) {
+      const ac = el.getAttribute('autocomplete') ?? '';
+      if (SENSITIVE_AC.has(ac)) continue;
+      const nameAttr = (el.getAttribute('name') ?? '') + ' ' + (el.getAttribute('id') ?? '');
+      if (SENSITIVE_NAME_RE.test(nameAttr)) continue;
+
       const hint = this.getFieldHint(el);
       if (!hint) continue;
 
