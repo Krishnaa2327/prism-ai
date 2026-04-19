@@ -127,6 +127,24 @@ export class CopilotManager {
     }).catch(() => {}); // never interrupt the flow
   }
 
+  reportSoftFailure(opts: { selector: string | null; actionType: string }): void {
+    if (!this.session) return;
+    fetch(`${this.apiUrl}/api/v1/session/heal`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': this.apiKey },
+      body: JSON.stringify({
+        sessionId: this.session.id,
+        stepId: this.session.currentStep?.id ?? null,
+        originalSelector: opts.selector ?? 'unknown',
+        usedSelector: null,
+        strategy: 'failed' as HealStrategy,
+        actionType: opts.actionType,
+        page: window.location.pathname,
+        reason: 'dom_unchanged_after_action',
+      }),
+    }).catch(() => {}); // never interrupt the flow
+  }
+
   constructor(apiKey: string, apiUrl: string) {
     this.apiKey = apiKey;
     this.apiUrl = apiUrl;
