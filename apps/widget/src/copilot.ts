@@ -53,7 +53,8 @@ export type AgentAction =
   | { type: 'verify_integration'; integType: string; success: boolean; message: string }
   | { type: 'escalate_to_human'; reason: string; trigger: string; message: string }
   | { type: 'chat'; content: string }
-  | { type: 'goal_complete'; summary: string };
+  | { type: 'goal_complete'; summary: string }
+  | { type: 'degrade_to_manual'; instruction: string; reason: string };
 
 export class CopilotManager {
   private apiKey: string;
@@ -402,7 +403,7 @@ export class CopilotManager {
 
   async sendGoalMessage(opts: {
     goal: string;
-    turnHistory: Array<{ role: 'user' | 'assistant'; content: string }>;
+    turnHistory: Array<{ role: 'user' | 'assistant' | 'observe'; content: string }>;
     turnCount: number;
     onText?: (word: string) => void;
   }): Promise<{ action: AgentAction; done: boolean; turnCount: number } | null> {

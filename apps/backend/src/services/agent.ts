@@ -141,7 +141,8 @@ export type AgentAction =
   | { type: 'call_api'; url: string; method: string; reason: string }
   | { type: 'escalate_to_human'; reason: string; trigger: string; message: string }
   | { type: 'chat'; content: string }
-  | { type: 'goal_complete'; summary: string };
+  | { type: 'goal_complete'; summary: string }
+  | { type: 'degrade_to_manual'; instruction: string; reason: string };
 
 export interface PageContext {
   url: string;
@@ -824,7 +825,7 @@ export async function* runAgentStream(
 // ─── Goal mode ────────────────────────────────────────────────────────────────
 
 export interface GoalTurn {
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'observe';
   content: string;
 }
 
