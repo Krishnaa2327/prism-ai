@@ -15,6 +15,7 @@ import {
   addMessage, addFeedbackButtons, tryParseSteps, addStepsCard,
   addChips, addActionToast, addCelebration, addStepPill,
   renderStepProgress, createStreamingBubble,
+  renderPlanChecklist, updatePlanPhase, PlanPhase,
 } from './ui';
 
 export class OnboardAIWidget {
@@ -33,6 +34,11 @@ export class OnboardAIWidget {
   private goalTurnCount = 0;
   private goalRunning = false;
   private goalFailureCount = 0;
+
+  // ─── Plan mode state ─────────────────────────────────────────────────────
+  private planActive = false;
+  private planPhases: PlanPhase[] = [];
+  private planCurrentPhaseIdx = 0;
 
   // DOM refs
   private messagesEl!: HTMLElement;
@@ -362,6 +368,41 @@ export class OnboardAIWidget {
     this.goalFailureCount = 0;
 
     addMessage(this.messagesEl, goal, 'user');
+
+    const thinkingDiv = createStreamingBubble(this.messagesEl);
+    thinkingDiv.textContent = 'Planning your steps…';
+    thinkingDiv.classList.remove('oai-streaming');
+
+    const phases = await this.copilot.sendPlanRequest(goal);
+    thinkingDiv.remove();
+
+    if (phases && phases.length > 1) {
+      this.planPhases = phases;
+      this.planCurrentPhaseIdx = 0;
+      this.planActive = true;
+      renderPlanChecklist(this.messagesEl, phases);
+      await this.startNextPlanPhase();
+    } else {
+      await this.runGoalTurn();
+    }
+  }
+
+  private async startNextPlanPhase() {
+    const phase = this.planPhases[this.planCurrentPhaseIdx];
+    if (!phase) {
+      addCelebration(this.messagesEl, '✅ All done!', `Completed all ${this.planPhases.length} phases.`);
+      this.goalRunning = false;
+      this.goalMode = false;
+      this.planActive = false;
+      return;
+    }
+    updatePlanPhase(phase.id, 'active');
+    addStepPill(this.messagesEl, `Phase ${this.planCurrentPhaseIdx + 1} of ${this.planPhases.length}: ${phase.title}`);
+    this.goalText = `${phase.title}: ${phase.description}`;
+    this.goalTurnHistory = [];
+    this.goalTurnCount = 0;
+    this.goalFailureCount = 0;
+    this.goalRunning = true;
     await this.runGoalTurn();
   }
 
@@ -438,8 +479,15 @@ export class OnboardAIWidget {
     }
 
     if (done) {
-      this.goalRunning = false;
-      this.goalMode = false;
+      if (this.planActive) {
+        updatePlanPhase(this.planPhases[this.planCurrentPhaseIdx].id, 'done');
+        this.planCurrentPhaseIdx++;
+        this.goalRunning = false;
+        setTimeout(() => this.startNextPlanPhase(), 800);
+      } else {
+        this.goalRunning = false;
+        this.goalMode = false;
+      }
       return;
     }
 

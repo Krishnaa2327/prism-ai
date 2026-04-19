@@ -830,6 +830,82 @@ export async function* runAgentStream(
   yield { type: 'action', action: action ?? { type: 'chat', content: 'Let me help you with that.' } };
 }
 
+// ─── Plan mode ────────────────────────────────────────────────────────────────
+
+export interface GoalPlanPhase {
+  id: string;
+  title: string;
+  description: string;
+}
+
+export async function runAgentPlan(opts: {
+  org: Organization;
+  goal: string;
+  pageContext?: PageContext;
+}): Promise<GoalPlanPhase[]> {
+  const { org, goal, pageContext } = opts;
+
+  const planTool: OpenAI.Chat.ChatCompletionTool = {
+    type: 'function',
+    function: {
+      name: 'create_plan',
+      description: 'Break the user goal into 2–5 sequential phases',
+      parameters: {
+        type: 'object',
+        properties: {
+          phases: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id:          { type: 'string' },
+                title:       { type: 'string', description: 'Action title, max 6 words' },
+                description: { type: 'string', description: 'One sentence: what happens in this phase' },
+              },
+              required: ['id', 'title', 'description'],
+            },
+          },
+        },
+        required: ['phases'],
+      },
+    },
+  };
+
+  const pageHint = pageContext
+    ? `Current page: ${sanitizeDomText(pageContext.title)} (${pageContext.url})`
+    : '';
+
+  const systemPrompt = `You are Prism, planning a multi-step workflow inside "${org.name}".
+Break the user's goal into 2–5 sequential, concrete phases. Each phase is one focused task completable on a single page or screen.
+Phase titles must be under 6 words and action-oriented (e.g. "Create company profile", "Add payment method").
+${pageHint}`.trim();
+
+  const response = await withRetry(
+    () => openai().chat.completions.create({
+      model: 'gpt-4o-mini',
+      max_tokens: 512,
+      temperature: 0,
+      tools: [planTool],
+      tool_choice: { type: 'function', function: { name: 'create_plan' } },
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: goal },
+      ],
+    }),
+    { retries: 2, delayMs: 600, label: `agent.plan org=${org.id}` }
+  );
+
+  const call = response.choices[0].message.tool_calls?.[0];
+  if (!call) return [{ id: 'phase_1', title: goal.slice(0, 40), description: 'Complete the requested task.' }];
+
+  try {
+    const input = JSON.parse(call.function.arguments) as { phases: GoalPlanPhase[] };
+    return input.phases.map((p, i) => ({ ...p, id: p.id || `phase_${i + 1}` }));
+  } catch {
+    return [{ id: 'phase_1', title: goal.slice(0, 40), description: 'Complete the requested task.' }];
+  }
+}
+
 // ─── Goal mode ────────────────────────────────────────────────────────────────
 
 export interface GoalTurn {

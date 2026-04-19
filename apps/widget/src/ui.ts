@@ -235,6 +235,41 @@ export function createStreamingBubble(messagesEl: HTMLElement): HTMLDivElement {
   return div;
 }
 
+// ── Plan checklist ─────────────────────────────────────────────────────────────
+export interface PlanPhase { id: string; title: string; description: string }
+
+export function renderPlanChecklist(messagesEl: HTMLElement, phases: PlanPhase[]): HTMLElement {
+  const card = document.createElement('div');
+  card.className = 'oai-plan-card';
+  const header = document.createElement('div');
+  header.className = 'oai-plan-header';
+  header.textContent = "Here's the plan:";
+  card.appendChild(header);
+  const list = document.createElement('ol');
+  list.className = 'oai-plan-list';
+  phases.forEach((phase, i) => {
+    const item = document.createElement('li');
+    item.id = `oai-plan-phase-${phase.id}`;
+    item.className = 'oai-plan-phase oai-plan-pending';
+    item.innerHTML = `<div class="oai-plan-phase-circle">${i + 1}</div><div class="oai-plan-phase-content"><div class="oai-plan-phase-title">${phase.title}</div><div class="oai-plan-phase-desc">${phase.description}</div></div>`;
+    list.appendChild(item);
+  });
+  card.appendChild(list);
+  messagesEl.appendChild(card);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return card;
+}
+
+export function updatePlanPhase(phaseId: string, status: 'active' | 'done') {
+  const item = document.getElementById(`oai-plan-phase-${phaseId}`);
+  if (!item) return;
+  item.className = `oai-plan-phase oai-plan-${status}`;
+  if (status === 'done') {
+    const circle = item.querySelector('.oai-plan-phase-circle');
+    if (circle) circle.textContent = '✓';
+  }
+}
+
 // ── Steps card (numbered list response) ───────────────────────────────────────
 export function addStepsCard(messagesEl: HTMLElement, steps: StepsResponse): HTMLDivElement {
   const card = document.createElement('div');

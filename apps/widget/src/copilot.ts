@@ -45,6 +45,12 @@ export function matchesUrlPattern(pattern: string, url: string = window.location
   });
 }
 
+export interface GoalPlanPhase {
+  id: string;
+  title: string;
+  description: string;
+}
+
 export type AgentAction =
   | { type: 'ask_clarification'; question: string; options?: string[] }
   | { type: 'execute_page_action'; actionType: string; payload: Record<string, unknown>; message: string; shouldVerify?: boolean }
@@ -417,6 +423,22 @@ export class CopilotManager {
 
   getSessionId(): string | null {
     return this.session?.id ?? null;
+  }
+
+  async sendPlanRequest(goal: string): Promise<GoalPlanPhase[] | null> {
+    const pageContext = scanPage();
+    try {
+      const res = await fetch(`${this.apiUrl}/api/v1/session/act/plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': this.apiKey },
+        body: JSON.stringify({ sessionId: this.session?.id ?? 'plan_session', goal, pageContext }),
+      });
+      if (!res.ok) return null;
+      const data = await res.json() as { phases: GoalPlanPhase[] };
+      return data.phases;
+    } catch {
+      return null;
+    }
   }
 
   async sendGoalMessage(opts: {

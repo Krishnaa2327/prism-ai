@@ -5,18 +5,16 @@ import { useAuthStore } from '@/store/auth';
 
 const nav = [
   { href: '/dashboard',            label: 'Dashboard',       icon: '▦' },
-  { href: '/flows',                label: 'Flows',           icon: '◈' },
-  { href: '/activation',           label: 'Activation',      icon: '◎' },
-  { href: '/users',                label: 'Users',           icon: '◉' },
-  { href: '/failures',             label: 'Failure Inbox',   icon: '◭' },
-  { href: '/escalations',          label: 'Escalations',     icon: '◬' },
   { href: '/conversations',        label: 'Conversations',   icon: '◷' },
-  { href: '/settings/audit',       label: 'Audit Log',       icon: '◱' },
+  { href: '/questions',            label: 'Questions',       icon: '◎' },
+  { href: '/insights',             label: 'Insights',        icon: '◐' },
+  { href: '/users',                label: 'Users',           icon: '◉' },
+  { href: '/flows',                label: 'Flows',           icon: '◈' },
   { href: '/settings/knowledge',   label: 'Knowledge Base',  icon: '◫' },
+  { href: '/settings/integrations',label: 'Integrations',    icon: '◌' },
   { href: '/settings/ai',          label: 'AI Config',       icon: '◈' },
   { href: '/settings/widget',      label: 'Widget',          icon: '◆' },
   { href: '/settings/billing',     label: 'Billing',         icon: '◇' },
-  { href: '/docs',                 label: 'Docs',            icon: '◻' },
 ];
 
 export default function Sidebar() {

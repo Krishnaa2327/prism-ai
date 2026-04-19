@@ -262,4 +262,158 @@ router.get('/health', authenticateJWT, requireFeature('agentHealth'), async (req
   });
 });
 
+// ─── GET /api/v1/analytics/insights ──────────────────────────────────────────
+// Surfaces actionable insight cards from user message patterns and overview stats.
+// Each insight has a type, severity, title, description, count, and example quotes.
+router.get('/insights', authenticateJWT, async (req: AuthenticatedRequest, res: Response) => {
+  const { organizationId } = req.user!;
+  const days = 30;
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+  const [messages, totalConversations, totalMessages] = await Promise.all([
+    prisma.message.findMany({
+      where: { role: 'user', createdAt: { gte: since }, conversation: { organizationId } },
+      select: { content: true, createdAt: true },
+      orderBy: { createdAt: 'desc' },
+      take: 2000,
+    }),
+    prisma.conversation.count({ where: { organizationId } }),
+    prisma.message.count({ where: { conversation: { organizationId } } }),
+  ]);
+
+  function classifyIntent(text: string): 'how_to' | 'stuck' | 'navigation' | 'question' | 'other' {
+    const t = text.toLowerCase();
+    if (/\bhow\b/.test(t) || /steps to/.test(t)) return 'how_to';
+    if (/can'?t|cannot|error|broken|doesn'?t work|not working|fail|issue|problem|stuck/.test(t)) return 'stuck';
+    if (/\bwhere\b|\bfind\b|\bnavigate\b|\bgo to\b|\btake me\b|\bshow me\b/.test(t)) return 'navigation';
+    if (/\bwhat\b|\bwhy\b|\bwhich\b|\bexplain\b|\btell me\b|\bdoes\b/.test(t) || t.includes('?')) return 'question';
+    return 'other';
+  }
+
+  function normalise(text: string): string {
+    return text.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+  }
+
+  const SKIP = new Set(['__init__', '__verify__']);
+  const map = new Map<string, { raw: string; count: number; lastSeen: Date; intent: ReturnType<typeof classifyIntent> }>();
+
+  for (const msg of messages) {
+    const norm = normalise(msg.content);
+    if (!norm || SKIP.has(norm)) continue;
+    if (!map.has(norm)) {
+      map.set(norm, { raw: msg.content.trim().slice(0, 200), count: 0, lastSeen: msg.createdAt, intent: classifyIntent(norm) });
+    }
+    const entry = map.get(norm)!;
+    entry.count++;
+    if (msg.createdAt > entry.lastSeen) entry.lastSeen = msg.createdAt;
+  }
+
+  const questions = [...map.values()].sort((a, b) => b.count - a.count);
+
+  type InsightSeverity = 'high' | 'medium' | 'low';
+  type InsightType = 'pain_point' | 'knowledge_gap' | 'navigation_confusion' | 'frequent_question' | 'low_engagement';
+
+  interface Insight {
+    id: string;
+    type: InsightType;
+    severity: InsightSeverity;
+    title: string;
+    description: string;
+    count: number;
+    examples: string[];
+    detectedAt: string;
+  }
+
+  const insights: Insight[] = [];
+
+  // Pain points — stuck intents
+  const stuckItems = questions.filter((q) => q.intent === 'stuck');
+  if (stuckItems.length > 0) {
+    const top = stuckItems.slice(0, 5);
+    const totalCount = stuckItems.reduce((s, q) => s + q.count, 0);
+    insights.push({
+      id: 'pain_points',
+      type: 'pain_point',
+      severity: totalCount >= 10 ? 'high' : totalCount >= 3 ? 'medium' : 'low',
+      title: 'Users are hitting blockers',
+      description: `${stuckItems.length} distinct issues reported across ${totalCount} messages. Users are unable to complete actions and expressing frustration.`,
+      count: totalCount,
+      examples: top.map((q) => q.raw),
+      detectedAt: stuckItems[0].lastSeen.toISOString(),
+    });
+  }
+
+  // Knowledge gaps — how_to intents
+  const howToItems = questions.filter((q) => q.intent === 'how_to');
+  if (howToItems.length > 0) {
+    const top = howToItems.slice(0, 5);
+    const totalCount = howToItems.reduce((s, q) => s + q.count, 0);
+    insights.push({
+      id: 'knowledge_gaps',
+      type: 'knowledge_gap',
+      severity: totalCount >= 15 ? 'high' : totalCount >= 5 ? 'medium' : 'low',
+      title: 'Users need step-by-step guidance',
+      description: `${howToItems.length} how-to questions asked ${totalCount} times. Consider adding these to your knowledge base or improving your AI instructions.`,
+      count: totalCount,
+      examples: top.map((q) => q.raw),
+      detectedAt: howToItems[0].lastSeen.toISOString(),
+    });
+  }
+
+  // Navigation confusion
+  const navItems = questions.filter((q) => q.intent === 'navigation');
+  if (navItems.length > 0) {
+    const top = navItems.slice(0, 5);
+    const totalCount = navItems.reduce((s, q) => s + q.count, 0);
+    insights.push({
+      id: 'navigation_confusion',
+      type: 'navigation_confusion',
+      severity: totalCount >= 10 ? 'high' : totalCount >= 3 ? 'medium' : 'low',
+      title: 'Users struggle to find things',
+      description: `${navItems.length} navigation questions asked ${totalCount} times. Users can't locate key features or pages in your product.`,
+      count: totalCount,
+      examples: top.map((q) => q.raw),
+      detectedAt: navItems[0].lastSeen.toISOString(),
+    });
+  }
+
+  // Frequent questions — general question intent
+  const questionItems = questions.filter((q) => q.intent === 'question' && q.count >= 2);
+  if (questionItems.length > 0) {
+    const top = questionItems.slice(0, 5);
+    const totalCount = questionItems.reduce((s, q) => s + q.count, 0);
+    insights.push({
+      id: 'frequent_questions',
+      type: 'frequent_question',
+      severity: 'low',
+      title: 'Recurring questions detected',
+      description: `${questionItems.length} questions asked multiple times. These could be addressed in your product UI or documentation.`,
+      count: totalCount,
+      examples: top.map((q) => q.raw),
+      detectedAt: questionItems[0].lastSeen.toISOString(),
+    });
+  }
+
+  // Low engagement signal
+  const avgMessages = totalConversations > 0 ? totalMessages / totalConversations : 0;
+  if (totalConversations >= 5 && avgMessages < 3) {
+    insights.push({
+      id: 'low_engagement',
+      type: 'low_engagement',
+      severity: 'medium',
+      title: 'Short conversations — users disengaging quickly',
+      description: `Average of ${avgMessages.toFixed(1)} messages per conversation. Users may not be finding value in the AI assistant. Review your AI instructions and knowledge base.`,
+      count: totalConversations,
+      examples: [],
+      detectedAt: new Date().toISOString(),
+    });
+  }
+
+  // Sort: high → medium → low
+  const order: InsightSeverity[] = ['high', 'medium', 'low'];
+  insights.sort((a, b) => order.indexOf(a.severity) - order.indexOf(b.severity));
+
+  res.json({ insights, generatedAt: new Date().toISOString(), days });
+});
+
 export default router;

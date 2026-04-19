@@ -4,7 +4,7 @@ import { prisma } from '../lib/prisma';
 import { authenticateApiKey } from '../middleware/auth';
 import { getMtuUsage } from '../middleware/rateLimit';
 import { PLANS } from '../lib/plans';
-import { runAgentSafe, runAgentStream, runAgentGoal, GoalTurn } from '../services/agent';
+import { runAgentSafe, runAgentStream, runAgentGoal, runAgentPlan, GoalTurn } from '../services/agent';
 import { detectIntent } from '../services/intent';
 import { detectLanguage, translateText, transcribeAudio, synthesizeSpeech, isSarvamEnabled } from '../services/sarvam';
 
@@ -947,6 +947,22 @@ router.post('/act/stream', async (req: AuthenticatedRequest, res: Response) => {
   } finally {
     res.end();
   }
+});
+
+// ─── POST /api/v1/session/act/plan — decompose goal into phases ──────────────
+router.post('/act/plan', async (req: AuthenticatedRequest, res: Response) => {
+  const { goal, pageContext } = req.body as {
+    goal: string;
+    pageContext?: import('../services/agent').PageContext;
+  };
+
+  if (!goal || goal.length > 500) {
+    res.status(400).json({ error: 'goal required, max 500 chars' });
+    return;
+  }
+
+  const phases = await runAgentPlan({ org: req.organization!, goal, pageContext });
+  res.json({ phases });
 });
 
 // ─── POST /api/v1/session/act/goal — ReAct goal mode ─────────────────────────
