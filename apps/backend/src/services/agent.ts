@@ -186,11 +186,12 @@ function buildSystemPrompt(opts: {
   isVerify: boolean;
   unansweredQuestions: string[];
   actionHint: string;
+  detectedLang?: string;
 }): string {
   const {
     orgName, customInstructions, step, collectedData, isLastStep,
     userMetadata, userHistoryFormatted, domSummary, kbSection, mcpSection,
-    isInit, isVerify, unansweredQuestions, actionHint,
+    isInit, isVerify, unansweredQuestions, actionHint, detectedLang,
   } = opts;
 
   const metaKeys = userMetadata ? Object.keys(userMetadata) : [];
@@ -226,6 +227,12 @@ RESPONSE TURN: The user has replied or taken an action.
 - If step is fully done → ${isLastStep ? 'call celebrate_milestone' : 'call complete_step'}.`
     : '';
 
+  const langInstruction = detectedLang === 'hi'
+    ? '\nLANGUAGE: Always respond in Hindi (Devanagari script). Keep technical terms in English.'
+    : detectedLang === 'hinglish'
+    ? '\nLANGUAGE: Respond in Hinglish — natural Hindi+English mix in Roman script. Example: "Yahan click karein, phir apna naam enter karein."'
+    : '';
+
   return `You are Prism, an AI onboarding guide inside "${orgName}". You ALWAYS call exactly one tool — never respond with plain text.
 ${userProfile}${historySection}
 STEP: "${step.title}"
@@ -241,7 +248,7 @@ ABSOLUTE RULES:
 - Never confirm, summarise, or ask "are you ready?".
 - Never call complete_step speculatively — only when the user has provably finished.
 - Keep all user-facing text under 25 words.
-${customInstructions ?? ''}`.trim();
+${customInstructions ?? ''}${langInstruction}`.trim();
 }
 
 // ─── Parse tool call → AgentAction ───────────────────────────────────────────
@@ -363,10 +370,11 @@ async function prepareAgentCall(opts: {
   pageContext?: PageContext;
   userHistoryFormatted?: string;
   userMetadata?: Record<string, unknown>;
+  detectedLang?: string;
 }) {
   const {
     org, step, userMessage, collectedData, conversationHistory,
-    isLastStep, pageContext, userHistoryFormatted, userMetadata,
+    isLastStep, pageContext, userHistoryFormatted, userMetadata, detectedLang,
   } = opts;
 
   const isInit   = userMessage === '__init__';
@@ -447,6 +455,7 @@ ${pageContext.elements.map((e) =>
     isVerify,
     unansweredQuestions,
     actionHint,
+    detectedLang,
   });
 
   const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
@@ -548,6 +557,7 @@ export async function runAgent(opts: {
   pageContext?: PageContext;
   userHistoryFormatted?: string;
   userMetadata?: Record<string, unknown>;
+  detectedLang?: string;
 }): Promise<AgentAction> {
   const { model, systemPrompt, messages, toolsForStep, mcpBundles, collectedData } = await prepareAgentCall(opts);
 

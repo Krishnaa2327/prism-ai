@@ -6,6 +6,7 @@ import { getMtuUsage } from '../middleware/rateLimit';
 import { PLANS } from '../lib/plans';
 import { runAgentSafe, runAgentStream } from '../services/agent';
 import { detectIntent } from '../services/intent';
+import { detectLanguage, translateText, transcribeAudio, synthesizeSpeech, isSarvamEnabled } from '../services/sarvam';
 
 import { getUserHistory } from '../services/userhistory';
 import { createEscalationTicket, notifyTeam } from '../services/escalation';
@@ -13,6 +14,35 @@ import { AuthenticatedRequest } from '../types';
 
 const router = Router();
 router.use(authenticateApiKey);
+
+async function localizeAction(
+  action: import('../services/agent').AgentAction,
+  lang: string
+): Promise<import('../services/agent').AgentAction> {
+  if (lang === 'en' || !isSarvamEnabled()) return action;
+  const t = (s: string) => translateText(s, lang, 'en');
+
+  if (action.type === 'ask_clarification') {
+    return { ...action, question: await t(action.question) };
+  }
+  if (action.type === 'complete_step') {
+    return { ...action, message: await t(action.message) };
+  }
+  if (action.type === 'celebrate_milestone') {
+    return {
+      ...action,
+      headline: await t(action.headline),
+      insight: await t(action.insight),
+    };
+  }
+  if (action.type === 'chat') {
+    return { ...action, content: await t(action.content) };
+  }
+  if (action.type === 'escalate_to_human') {
+    return { ...action, message: await t(action.message) };
+  }
+  return action;
+}
 
 // ─── Helper: get or create end user ──────────────────────────────────────────
 async function getOrCreateEndUser(orgId: string, userId: string, metadata: Record<string, unknown>) {
@@ -724,10 +754,15 @@ router.post('/act', async (req: AuthenticatedRequest, res: Response) => {
   // Fetch user history (non-blocking)
   const userHistory = await getUserHistory(session.endUserId, session.id).catch(() => null);
 
+  const detectedLang = await detectLanguage(userMessage);
+  const agentMessage = detectedLang !== 'en'
+    ? await translateText(userMessage, 'en', detectedLang)
+    : userMessage;
+
   const action = await runAgentSafe({
     org: req.organization!,
     step: currentStep,
-    userMessage,
+    userMessage: agentMessage,
     collectedData: session.collectedData as Record<string, unknown>,
     conversationHistory,
     isLastStep,
@@ -735,13 +770,15 @@ router.post('/act', async (req: AuthenticatedRequest, res: Response) => {
     userHistoryFormatted: userHistory?.formatted,
     userMetadata: (session.endUser.metadata ?? {}) as Record<string, unknown>,
     sessionId: session.id,
+    detectedLang,
   });
 
   // ── Guard: block premature complete_step ─────────────────────────────────
   const guardedAction = guardCompleteStep(action, currentStep, session.collectedData as Record<string, unknown>);
+  const localizedAction = await localizeAction(guardedAction, detectedLang);
 
   const messageId = await applyActionSideEffects({
-    action: guardedAction,
+    action: localizedAction,
     session,
     currentStep,
     userMessage,
@@ -749,7 +786,7 @@ router.post('/act', async (req: AuthenticatedRequest, res: Response) => {
     orgId: req.organization!.id,
   });
 
-  res.json({ action: guardedAction, messageId });
+  res.json({ action: localizedAction, messageId });
 });
 
 // ─── In-memory rate limiter (per session, not per IP) ────────────────────────
@@ -852,18 +889,24 @@ router.post('/act/stream', async (req: AuthenticatedRequest, res: Response) => {
     const isLastStep  = currentStep.order === Math.max(...session.flow.steps.map((s) => s.order));
     const userHistory = await getUserHistory(session.endUserId, session.id).catch(() => null);
 
+    const streamDetectedLang = await detectLanguage(userMessage);
+    const streamAgentMessage = streamDetectedLang !== 'en'
+      ? await translateText(userMessage, 'en', streamDetectedLang)
+      : userMessage;
+
     let finalAction: import('../services/agent').AgentAction | null = null;
 
     for await (const event of runAgentStream({
       org: req.organization!,
       step: currentStep,
-      userMessage,
+      userMessage: streamAgentMessage,
       collectedData: session.collectedData as Record<string, unknown>,
       conversationHistory,
       isLastStep,
       pageContext,
       userHistoryFormatted: userHistory?.formatted,
       userMetadata: (session.endUser.metadata ?? {}) as Record<string, unknown>,
+      detectedLang: streamDetectedLang,
     })) {
       if (event.type === 'word') {
         send('text', { word: event.word });
@@ -879,9 +922,10 @@ router.post('/act/stream', async (req: AuthenticatedRequest, res: Response) => {
     }
 
     const guardedAction = guardCompleteStep(finalAction, currentStep, session.collectedData as Record<string, unknown>);
+    const localizedStreamAction = await localizeAction(guardedAction, streamDetectedLang);
 
     const messageId = await applyActionSideEffects({
-      action: guardedAction,
+      action: localizedStreamAction,
       session,
       currentStep,
       userMessage,
@@ -889,13 +933,48 @@ router.post('/act/stream', async (req: AuthenticatedRequest, res: Response) => {
       orgId: req.organization!.id,
     });
 
-    send('action', { action: guardedAction, messageId });
+    send('action', { action: localizedStreamAction, messageId });
     send('done', {});
   } catch (err) {
     send('error', { message: err instanceof Error ? err.message : 'Agent error' });
   } finally {
     res.end();
   }
+});
+
+// ─── POST /api/v1/session/stt ────────────────────────────────────────────────
+router.post('/stt', async (req: AuthenticatedRequest, res: Response) => {
+  const { audioBase64, languageCode } = req.body as { audioBase64?: string; languageCode?: string };
+
+  if (!audioBase64) {
+    res.status(400).json({ error: 'audioBase64 required' });
+    return;
+  }
+  if (!isSarvamEnabled()) {
+    res.status(503).json({ error: 'Sarvam API key not configured' });
+    return;
+  }
+
+  const transcript = await transcribeAudio(audioBase64, languageCode);
+  const detectedLang = await detectLanguage(transcript);
+  res.json({ transcript, detectedLang });
+});
+
+// ─── POST /api/v1/session/tts ────────────────────────────────────────────────
+router.post('/tts', async (req: AuthenticatedRequest, res: Response) => {
+  const { text, languageCode } = req.body as { text?: string; languageCode?: string };
+
+  if (!text) {
+    res.status(400).json({ error: 'text required' });
+    return;
+  }
+  if (!isSarvamEnabled()) {
+    res.status(503).json({ error: 'Sarvam API key not configured' });
+    return;
+  }
+
+  const audioBuffer = await synthesizeSpeech(text, languageCode);
+  res.json({ audioBase64: audioBuffer.toString('base64') });
 });
 
 // ─── POST /api/v1/session/page-change ────────────────────────────────────────
