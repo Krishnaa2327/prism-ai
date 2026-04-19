@@ -31,11 +31,16 @@ import { attachWebSocketServer } from './lib/websocket';
 import { checkFlowAlerts } from './services/alerting';
 
 // ─── Startup env validation ───────────────────────────────────────────────────
-const REQUIRED_ENV = ['DATABASE_URL', 'JWT_SECRET', 'OPENAI_API_KEY'];
+const REQUIRED_ENV = ['DATABASE_URL', 'JWT_SECRET'];
+const OPTIONAL_ENV = ['OPENAI_API_KEY'];
 const missing = REQUIRED_ENV.filter((k) => !process.env[k]);
 if (missing.length > 0) {
   console.error(`[startup] Missing required env vars: ${missing.join(', ')}`);
   process.exit(1);
+}
+const missingOptional = OPTIONAL_ENV.filter((k) => !process.env[k]);
+if (missingOptional.length > 0) {
+  console.warn(`[startup] Optional env vars not set (some features disabled): ${missingOptional.join(', ')}`);
 }
 if (!process.env.ADMIN_SECRET) {
   console.warn('[startup] ADMIN_SECRET not set — admin routes will return 503');
