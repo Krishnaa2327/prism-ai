@@ -5,12 +5,14 @@ import { payrollScenarios } from './scenarios/payroll';
 import { gstScenarios } from './scenarios/gst';
 import { paymentsScenarios } from './scenarios/payments';
 import { hinglishScenarios } from './scenarios/hinglish';
+import { recoveryScenarios } from './scenarios/recovery';
 
 const ALL_SCENARIOS = [
   ...payrollScenarios,
   ...gstScenarios,
   ...paymentsScenarios,
   ...hinglishScenarios,
+  ...recoveryScenarios,
 ];
 
 async function main() {
