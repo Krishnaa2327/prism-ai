@@ -7,7 +7,8 @@ import { searchKnowledgeBase } from './knowledge';
 import { loadMcpTools, toOpenAITools, callMcpTool, resolveMcpCall, ConnectorToolBundle } from './mcp';
 import { logger, withRetry } from '../lib/logger';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+let _openai: OpenAI | null = null;
+const openai = () => { if (!_openai) _openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY }); return _openai; };
 
 // ─── Tool definitions ─────────────────────────────────────────────────────────
 
@@ -514,7 +515,7 @@ async function handleMcpCall(
   ];
 
   const followUp = await withRetry(
-    () => openai.chat.completions.create({
+    () => openai().chat.completions.create({
       model: 'gpt-4o',
       max_tokens: 1500,
       temperature: 0,
@@ -551,7 +552,7 @@ export async function runAgent(opts: {
   const { model, systemPrompt, messages, toolsForStep, mcpBundles, collectedData } = await prepareAgentCall(opts);
 
   const response = await withRetry(
-    () => openai.chat.completions.create({
+    () => openai().chat.completions.create({
       model,
       max_tokens: model === 'gpt-4o-mini' ? 512 : 1500,
       temperature: 0,
@@ -615,7 +616,7 @@ export async function runAgent(opts: {
       ];
 
       const followUp = await withRetry(
-        () => openai.chat.completions.create({
+        () => openai().chat.completions.create({
           model: 'gpt-4o',
           max_tokens: 1500,
           temperature: 0,
@@ -656,7 +657,7 @@ export async function* runAgentStream(
 
   // call_api and mcp__ calls need a follow-up turn — fall back to non-streaming
   // for those to keep the code paths simple. They're rare and fast.
-  const stream = await openai.chat.completions.create({
+  const stream = await openai().chat.completions.create({
     model,
     max_tokens: model === 'gpt-4o-mini' ? 512 : 1500,
     temperature: 0,
@@ -782,7 +783,7 @@ export async function* runAgentStream(
     ];
 
     const followUp = await withRetry(
-      () => openai.chat.completions.create({
+      () => openai().chat.completions.create({
         model: 'gpt-4o',
         max_tokens: 1500,
         temperature: 0,

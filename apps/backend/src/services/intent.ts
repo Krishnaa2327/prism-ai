@@ -1,7 +1,8 @@
 import OpenAI from 'openai';
 import { OnboardingStep } from '@prisma/client';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+let _openai: OpenAI | null = null;
+const openai = () => { if (!_openai) _openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY }); return _openai; };
 
 /**
  * Given the current page URL/path and user behavior context,
@@ -22,7 +23,7 @@ export async function detectIntent(
     .map((s) => `ID:${s.id} order:${s.order} title:"${s.title}" intent:"${s.intent}" url:"${s.targetUrl ?? ''}"`)
     .join('\n');
 
-  const response = await openai.chat.completions.create({
+  const response = await openai().chat.completions.create({
     model: 'gpt-4o-mini',
     max_tokens: 64,
     temperature: 0,
