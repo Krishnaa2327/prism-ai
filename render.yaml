@@ -3,6 +3,7 @@ services:
   - type: web
     name: prism-backend
     runtime: node
+    plan: free
     rootDir: apps/backend
     buildCommand: npm install && npx prisma generate && npm run build
     startCommand: npx prisma migrate deploy && node dist/index.js
@@ -11,7 +12,9 @@ services:
       - key: NODE_ENV
         value: production
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: prism-db
+          property: connectionString
       - key: JWT_SECRET
         generateValue: true
       - key: OPENAI_API_KEY
@@ -33,28 +36,31 @@ services:
       - key: SARVAM_API_KEY
         sync: false
 
-  # ─── Dashboard (Next.js) ──────────────────────────────────────────────────────
-  - type: web
-    name: prism-dashboard
-    runtime: node
-    rootDir: apps/dashboard
-    buildCommand: npm install && npm run build
-    startCommand: npm run start
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: NEXT_PUBLIC_API_URL
-        sync: false
-      - key: NEXT_PUBLIC_WS_URL
-        sync: false
-
-  # ─── Landing (Next.js) ───────────────────────────────────────────────────────
+  # ─── Landing Page ─────────────────────────────────────────────────────────────
   - type: web
     name: prism-landing
-    runtime: node
+    runtime: static
     rootDir: apps/landing
     buildCommand: npm install && npm run build
-    startCommand: npm run start
+    staticPublishPath: out
     envVars:
-      - key: NODE_ENV
-        value: production
+      - key: NEXT_PUBLIC_API_URL
+        sync: false
+
+  # ─── Dashboard ────────────────────────────────────────────────────────────────
+  - type: web
+    name: prism-dashboard
+    runtime: static
+    rootDir: apps/dashboard
+    buildCommand: npm install && npm run build
+    staticPublishPath: out
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        sync: false
+
+databases:
+  # ─── PostgreSQL ───────────────────────────────────────────────────────────────
+  - name: prism-db
+    plan: free
+    databaseName: prism
+    user: prism
