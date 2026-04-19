@@ -29,9 +29,10 @@ export class OnboardAIWidget {
   // ─── Goal mode state ─────────────────────────────────────────────────────
   private goalMode = false;
   private goalText = '';
-  private goalTurnHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  private goalTurnHistory: Array<{ role: 'user' | 'assistant' | 'observe'; content: string }> = [];
   private goalTurnCount = 0;
   private goalRunning = false;
+  private goalFailureCount = 0;
 
   // DOM refs
   private messagesEl!: HTMLElement;
@@ -358,9 +359,31 @@ export class OnboardAIWidget {
     this.goalTurnHistory = [];
     this.goalTurnCount = 0;
     this.goalRunning = true;
+    this.goalFailureCount = 0;
 
     addMessage(this.messagesEl, goal, 'user');
     await this.runGoalTurn();
+  }
+
+  private domFingerprint(): string {
+    const inputs = Array.from(document.querySelectorAll('input, select, textarea'))
+      .slice(0, 8)
+      .map((el) => `${(el as HTMLInputElement).name ?? el.id}=${(el as HTMLInputElement).value ?? ''}`)
+      .join('|');
+    const count = document.querySelectorAll('button, a, input, select, textarea').length;
+    return `${count}::${inputs}`;
+  }
+
+  private waitForDomChange(before: string, timeoutMs: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const deadline = Date.now() + timeoutMs;
+      const poll = () => {
+        if (this.domFingerprint() !== before) { resolve(true); return; }
+        if (Date.now() >= deadline) { resolve(false); return; }
+        setTimeout(poll, 100);
+      };
+      setTimeout(poll, 100);
+    });
   }
 
   private async runGoalTurn() {
@@ -389,12 +412,30 @@ export class OnboardAIWidget {
     const { action, done, turnCount } = result;
     this.goalTurnCount = turnCount;
 
-    // Record what the agent decided in turn history
     const actionDesc = this.describeAction(action);
     this.goalTurnHistory.push({ role: 'assistant', content: actionDesc });
 
-    // Handle the action in UI
-    this.handleAgentAction(action, document.createElement('div'), null);
+    if (action.type === 'execute_page_action') {
+      const before = this.domFingerprint();
+      this.handleAgentAction(action, document.createElement('div'), null);
+
+      const changed = await this.waitForDomChange(before, 1500);
+      if (!changed) {
+        const selector = (action.payload.selector as string | undefined) ??
+          Object.keys((action.payload.fields as Record<string, string> | undefined) ?? {})[0] ?? null;
+        this.goalTurnHistory.push({
+          role: 'observe',
+          content: `Action attempted on selector "${selector ?? 'unknown'}" but page did not change. Selector may be stale.`,
+        });
+        this.goalFailureCount++;
+        this.copilot.reportSoftFailure({ selector, actionType: action.actionType });
+        if (!done) { setTimeout(() => this.runGoalTurn(), 200); return; }
+      } else {
+        this.goalFailureCount = 0;
+      }
+    } else {
+      this.handleAgentAction(action, document.createElement('div'), null);
+    }
 
     if (done) {
       this.goalRunning = false;
@@ -402,9 +443,7 @@ export class OnboardAIWidget {
       return;
     }
 
-    // ReAct: observe — wait for DOM to settle after action, then loop
-    const delay = action.type === 'execute_page_action' ? 2000 : 500;
-    setTimeout(() => this.runGoalTurn(), delay);
+    setTimeout(() => this.runGoalTurn(), 500);
   }
 
   private describeAction(action: AgentAction): string {
