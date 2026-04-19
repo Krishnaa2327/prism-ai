@@ -504,6 +504,51 @@ export function injectStyles(primaryColor: string) {
       /* Cursor animation: skip movement on mobile (too small to be meaningful) */
       #__prism_cursor__ { display: none !important; }
     }
+
+    /* ── Degradation card ──────────────────────────────────────────────────── */
+    .oai-degrade-card {
+      background: #fff8e1;
+      border: 1.5px solid #f59e0b;
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin: 8px 0;
+      font-size: 13px;
+    }
+    .oai-degrade-header {
+      font-weight: 700;
+      color: #92400e;
+      margin-bottom: 8px;
+    }
+    .oai-degrade-instruction {
+      color: #1a1a1a;
+      margin-bottom: 6px;
+      line-height: 1.5;
+    }
+    .oai-degrade-reason {
+      color: #6b7280;
+      font-size: 11px;
+      margin-bottom: 12px;
+    }
+    .oai-degrade-actions { display: flex; gap: 8px; }
+    .oai-degrade-done {
+      background: #f59e0b;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      padding: 6px 14px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .oai-degrade-escalate {
+      background: transparent;
+      color: #6b7280;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      padding: 6px 14px;
+      cursor: pointer;
+      font-size: 12px;
+    }
   `;
 
   const style = document.createElement('style');

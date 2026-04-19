@@ -458,6 +458,8 @@ export class OnboardAIWidget {
         return `Goal achieved: ${action.summary}`;
       case 'escalate_to_human':
         return `Escalated: ${action.reason}`;
+      case 'degrade_to_manual':
+        return `Manual step required: ${action.instruction}`;
       default:
         return `Action: ${action.type}`;
     }
@@ -528,6 +530,37 @@ export class OnboardAIWidget {
         pill.innerHTML = '<span style="width:7px;height:7px;border-radius:50%;background:#f59e0b;flex-shrink:0;"></span>Support ticket created — a team member will reach out soon.';
         this.messagesEl.appendChild(pill);
         this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+        break;
+      }
+
+      case 'degrade_to_manual': {
+        const card = document.createElement('div');
+        card.className = 'oai-degrade-card';
+        card.innerHTML = `
+          <div class="oai-degrade-header">⚠ Manual step required</div>
+          <div class="oai-degrade-instruction">${action.instruction}</div>
+          <div class="oai-degrade-reason">Why: ${action.reason}</div>
+          <div class="oai-degrade-actions">
+            <button class="oai-degrade-done">✓ Done, continue</button>
+            <button class="oai-degrade-escalate">Get human help</button>
+          </div>
+        `;
+        this.messagesEl.appendChild(card);
+        this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+        card.querySelector('.oai-degrade-done')?.addEventListener('click', () => {
+          card.remove();
+          this.goalFailureCount = 0;
+          this.goalTurnHistory.push({ role: 'user', content: 'Manual step completed. Please continue.' });
+          this.goalRunning = true;
+          this.runGoalTurn();
+        });
+        card.querySelector('.oai-degrade-escalate')?.addEventListener('click', () => {
+          card.remove();
+          this.goalRunning = false;
+          this.goalMode = false;
+          addMessage(this.messagesEl, 'Connecting you with the team…', 'assistant');
+          this.copilot.sendMessage('__escalate__');
+        });
         break;
       }
 
