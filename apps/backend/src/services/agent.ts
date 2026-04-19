@@ -322,6 +322,14 @@ function parseToolCall(name: string, input: Record<string, unknown>): AgentActio
     return { type: 'goal_complete', summary: input.summary as string };
   }
 
+  if (name === 'degrade_to_manual') {
+    return {
+      type: 'degrade_to_manual',
+      instruction: input.instruction as string,
+      reason: input.reason as string,
+    };
+  }
+
   return null;
 }
 
@@ -889,8 +897,31 @@ RULES:
 
 ${org.customInstructions ?? ''}`.trim();
 
+  const degradeToManualTool: OpenAI.Chat.ChatCompletionTool = {
+    type: 'function',
+    function: {
+      name: 'degrade_to_manual',
+      description:
+        'When you cannot complete an action after multiple attempts, produce a precise manual instruction for the user. Do NOT escalate — instruct. Use specific visual landmarks: color, position, label text.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instruction: {
+            type: 'string',
+            description: 'Exact step-by-step manual instruction, e.g. "Click the blue Save button in the top-right of the Payroll Settings page"',
+          },
+          reason: {
+            type: 'string',
+            description: 'One sentence explaining why automation failed, e.g. "The page element changed since this flow was configured."',
+          },
+        },
+        required: ['instruction', 'reason'],
+      },
+    },
+  };
+
   // Filter out call_api (too risky in autonomous mode)
-  const tools = [...AGENT_TOOLS, goalCompleteTool].filter((t) => t.function.name !== 'call_api');
+  const tools = [...AGENT_TOOLS, goalCompleteTool, degradeToManualTool].filter((t) => t.function.name !== 'call_api');
 
   const response = await withRetry(
     () => openai().chat.completions.create({
