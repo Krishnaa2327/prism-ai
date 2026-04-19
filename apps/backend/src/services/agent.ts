@@ -874,6 +874,22 @@ export async function runAgentGoal(opts: {
     ? 'None yet.'
     : turnHistory.map((t, i) => `Turn ${i + 1} [${t.role}]: ${t.content}`).join('\n');
 
+  const observeCount = turnHistory.filter((t) => t.role === 'observe').length;
+  const failureContextBlock = observeCount > 0 ? `
+
+FAILURE CONTEXT:
+A previous action did not change the page (${observeCount} failed attempt${observeCount > 1 ? 's' : ''}).
+The selector may be stale or the element may have moved.
+
+Recovery strategy (in order):
+1. Try selecting by visible label text instead of CSS selector
+2. Try selecting by input placeholder or aria-label attribute
+3. Try selecting by proximity to the nearest heading or section title
+4. If you have tried 2+ different approaches and all failed, call degrade_to_manual — do NOT call escalate_to_human
+
+Never repeat a selector that appears in a failed observe turn.
+${observeCount >= 3 ? '\nYou have reached 3 failures. You MUST call degrade_to_manual now.' : ''}` : '';
+
   const systemPrompt = `You are Prism, an AI agent inside "${org.name}".
 
 GOAL: ${goal}
@@ -895,7 +911,7 @@ RULES:
 - Never repeat an action that already failed — try a different approach
 - Do not call complete_step or celebrate_milestone in goal mode — use goal_complete instead
 
-${org.customInstructions ?? ''}`.trim();
+${org.customInstructions ?? ''}${failureContextBlock}`.trim();
 
   const degradeToManualTool: OpenAI.Chat.ChatCompletionTool = {
     type: 'function',
@@ -923,18 +939,33 @@ ${org.customInstructions ?? ''}`.trim();
   // Filter out call_api (too risky in autonomous mode)
   const tools = [...AGENT_TOOLS, goalCompleteTool, degradeToManualTool].filter((t) => t.function.name !== 'call_api');
 
-  const response = await withRetry(
-    () => openai().chat.completions.create({
-      model: 'gpt-4o',
-      max_tokens: 1500,
-      temperature: 0,
-      tools,
-      tool_choice: 'required',
-      messages: [{ role: 'system', content: systemPrompt }],
-    }),
+  const GOAL_TURN_TIMEOUT_MS = 8_000;
+
+  const rawResponse = await withRetry(
+    () => Promise.race([
+      openai().chat.completions.create({
+        model: 'gpt-4o',
+        max_tokens: 1500,
+        temperature: 0,
+        tools,
+        tool_choice: 'required',
+        messages: [{ role: 'system', content: systemPrompt }],
+      }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), GOAL_TURN_TIMEOUT_MS)),
+    ]),
     { retries: 2, delayMs: 800, label: `agent.goal org=${org.id}` }
   );
 
+  if (!rawResponse) {
+    logger.warn('agent.goal.timeout', { orgId: org.id, sessionId: opts.sessionId });
+    return {
+      type: 'ask_clarification',
+      question: 'This is taking longer than expected. Want to continue or try a simpler approach?',
+      options: ['Continue', 'Try a simpler approach'],
+    };
+  }
+
+  const response = rawResponse;
   const msg = response.choices[0].message;
   logger.agentAction(org.id, opts.sessionId, msg.tool_calls?.[0]?.function?.name ?? 'none', {
     goalMode: true,
