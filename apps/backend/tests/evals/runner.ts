@@ -15,6 +15,7 @@ export interface EvalScenario {
   expectedActions: string[];
   maxTurns: number;
   tags: string[];
+  seedTurnHistory?: GoalTurn[];
 }
 
 export interface EvalResult {
@@ -29,6 +30,7 @@ export interface EvalResult {
   reachedCompletion: boolean;
   error?: string;
   durationMs: number;
+  turnLatenciesMs: number[];
 }
 
 const MOCK_ORG: Partial<Organization> = {
@@ -41,11 +43,13 @@ const MOCK_ORG: Partial<Organization> = {
 export async function runScenario(scenario: EvalScenario): Promise<EvalResult> {
   const start = Date.now();
   const actionsProduced: string[] = [];
+  const turnLatenciesMs: number[] = [];
 
   try {
-    const turnHistory: GoalTurn[] = [];
+    const turnHistory: GoalTurn[] = scenario.seedTurnHistory ? [...scenario.seedTurnHistory] : [];
 
     for (let turn = 0; turn < scenario.maxTurns; turn++) {
+      const t0 = process.hrtime.bigint();
       const action = await runAgentGoal({
         org: MOCK_ORG as Organization,
         goal: scenario.goal,
@@ -53,6 +57,7 @@ export async function runScenario(scenario: EvalScenario): Promise<EvalResult> {
         turnHistory,
         sessionId: `eval-${scenario.id}-turn-${turn}`,
       });
+      turnLatenciesMs.push(Number(process.hrtime.bigint() - t0) / 1_000_000);
 
       actionsProduced.push(action.type);
       turnHistory.push({ role: 'assistant', content: `Turn ${turn + 1}: executed ${action.type}` });
@@ -64,34 +69,20 @@ export async function runScenario(scenario: EvalScenario): Promise<EvalResult> {
     const firstActionMatch = actionsProduced[0] === scenario.expectedActions[0];
     const containsExpected = scenario.expectedActions.every((exp) => actionsProduced.includes(exp));
     const reachedCompletion = actionsProduced.includes('goal_complete');
-
     const passed = firstActionMatch && (containsExpected || reachedCompletion);
 
     return {
-      scenarioId: scenario.id,
-      description: scenario.description,
-      passed,
-      turns: actionsProduced.length,
-      actionsProduced,
-      expectedActions: scenario.expectedActions,
-      firstActionMatch,
-      containsExpected,
-      reachedCompletion,
-      durationMs: Date.now() - start,
+      scenarioId: scenario.id, description: scenario.description, passed,
+      turns: actionsProduced.length, actionsProduced, expectedActions: scenario.expectedActions,
+      firstActionMatch, containsExpected, reachedCompletion,
+      durationMs: Date.now() - start, turnLatenciesMs,
     };
   } catch (err) {
     return {
-      scenarioId: scenario.id,
-      description: scenario.description,
-      passed: false,
-      turns: 0,
-      actionsProduced,
-      expectedActions: scenario.expectedActions,
-      firstActionMatch: false,
-      containsExpected: false,
-      reachedCompletion: false,
-      error: (err as Error).message,
-      durationMs: Date.now() - start,
+      scenarioId: scenario.id, description: scenario.description, passed: false,
+      turns: 0, actionsProduced, expectedActions: scenario.expectedActions,
+      firstActionMatch: false, containsExpected: false, reachedCompletion: false,
+      error: (err as Error).message, durationMs: Date.now() - start, turnLatenciesMs,
     };
   }
 }
