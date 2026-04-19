@@ -4,7 +4,7 @@
 
 import { scanPage, buildSemanticSummary } from './scanner';
 import { resolveFromIndex, HealStrategy } from './resolver';
-import { spotlight, beacon, arrowCallout, multiHighlight, removeSpotlight } from './highlighter';
+import { spotlight, beacon, arrowCallout, multiHighlight, removeSpotlight, hoverTip } from './highlighter';
 import { animatedFillFields } from './cursor';
 
 export interface CopilotStep {
@@ -592,6 +592,19 @@ export class CopilotManager {
 
       if (resolvedSelectors.length > 0) {
         multiHighlight(resolvedSelectors, labels, duration, color);
+      }
+    }
+
+    if (actionType === 'hover_tip') {
+      const selector = payload.selector as string;
+      const text = payload.text as string;
+      const tipColor = (payload.color as string) || undefined;
+      if (selector && text) {
+        const result = resolveFromIndex(selector);
+        if (result) {
+          if (result.healed) this.reportHeal({ originalSelector: selector, usedSelector: result.usedSelector, strategy: result.strategy, actionType });
+          hoverTip(result.usedSelector ?? selector, text, tipColor);
+        }
       }
     }
   }

@@ -40,7 +40,7 @@ const AGENT_TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
         properties: {
           type: {
             type: 'string',
-            enum: ['fill_form', 'click', 'navigate', 'highlight'],
+            enum: ['fill_form', 'click', 'navigate', 'highlight', 'hover_tip'],
           },
           selector: { type: 'string', description: 'CSS selector for click or highlight (must be from live page elements)' },
           url:      { type: 'string', description: 'URL for navigate action' },

@@ -415,3 +415,77 @@ export function ringOnly(selector: string, durationMs = 3000) {
   }, 200);
 }
 
+// ─── hoverTip ──────────────────────────────────────────────────────────────────
+// Passive tooltip that appears on mouseenter, hides on mouseleave.
+// Does not require agent action — sits quietly on the element until removed.
+
+const HOVER_TIP_PREFIX = 'oai-htip-';
+
+export function hoverTip(selector: string, text: string, color = '#6366f1'): (() => void) | null {
+  injectKeyframes();
+  const el = document.querySelector<HTMLElement>(selector);
+  if (!el || el.closest('#oai-root')) return null;
+
+  const id = HOVER_TIP_PREFIX + Math.random().toString(36).slice(2, 8);
+
+  // Small info badge anchored top-right of element
+  const badge = document.createElement('div');
+  badge.id = id + '-badge';
+  badge.style.cssText = `
+    position: fixed; z-index: 2147483641; pointer-events: none;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: ${color}; color: white;
+    font-size: 10px; font-weight: 700; font-family: system-ui, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+    animation: oai-badge-in 0.2s ease both;
+  `;
+  badge.textContent = 'i';
+
+  // Tooltip bubble (hidden by default)
+  const tip = document.createElement('div');
+  tip.id = id + '-tip';
+  tip.style.cssText = `
+    position: fixed; z-index: 2147483642; pointer-events: none;
+    background: #1e293b; color: #f8fafc;
+    font-size: 12px; font-family: system-ui, sans-serif; line-height: 1.45;
+    padding: 7px 11px; border-radius: 8px; max-width: 220px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.22);
+    opacity: 0; transition: opacity 0.15s ease;
+    white-space: normal; word-break: break-word;
+  `;
+  tip.textContent = text;
+
+  function position() {
+    const rect = el.getBoundingClientRect();
+    badge.style.left = `${rect.right - 8}px`;
+    badge.style.top  = `${rect.top - 8}px`;
+    const tipTop = rect.top - 8 < 40 ? rect.bottom + 6 : rect.top - 42;
+    tip.style.left = `${Math.min(rect.left, window.innerWidth - 240)}px`;
+    tip.style.top  = `${tipTop}px`;
+  }
+
+  position();
+  document.body.appendChild(badge);
+  document.body.appendChild(tip);
+
+  const show = () => { position(); tip.style.opacity = '1'; };
+  const hide = () => { tip.style.opacity = '0'; };
+
+  el.addEventListener('mouseenter', show);
+  el.addEventListener('mouseleave', hide);
+  window.addEventListener('scroll', position, { passive: true });
+
+  return () => {
+    badge.remove();
+    tip.remove();
+    el.removeEventListener('mouseenter', show);
+    el.removeEventListener('mouseleave', hide);
+    window.removeEventListener('scroll', position);
+  };
+}
+
+export function removeHoverTips(): void {
+  document.querySelectorAll(`[id^="${HOVER_TIP_PREFIX}"]`).forEach((el) => el.remove());
+}
+

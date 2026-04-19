@@ -14,6 +14,7 @@ const nav = [
   { href: '/settings/integrations',label: 'Integrations',    icon: '◌' },
   { href: '/settings/ai',          label: 'AI Config',       icon: '◈' },
   { href: '/settings/widget',      label: 'Widget',          icon: '◆' },
+  { href: '/settings/audit',        label: 'Audit Log',       icon: '◑' },
   { href: '/settings/billing',     label: 'Billing',         icon: '◇' },
 ];
 
