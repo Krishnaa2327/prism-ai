@@ -9,6 +9,7 @@ import { detectIntent } from '../services/intent';
 import { detectLanguage, translateText, transcribeAudio, synthesizeSpeech, isSarvamEnabled } from '../services/sarvam';
 
 import { getUserHistory } from '../services/userhistory';
+import { logger } from '../lib/logger';
 import { createEscalationTicket, notifyTeam } from '../services/escalation';
 import { AuthenticatedRequest } from '../types';
 
@@ -895,6 +896,8 @@ router.post('/act/stream', async (req: AuthenticatedRequest, res: Response) => {
       : userMessage;
 
     let finalAction: import('../services/agent').AgentAction | null = null;
+    const streamStart = Date.now();
+    let firstTokenLogged = false;
 
     for await (const event of runAgentStream({
       org: req.organization!,
@@ -909,6 +912,10 @@ router.post('/act/stream', async (req: AuthenticatedRequest, res: Response) => {
       detectedLang: streamDetectedLang,
     })) {
       if (event.type === 'word') {
+        if (!firstTokenLogged) {
+          logger.info('agent.stream.first_token_ms', { ms: Date.now() - streamStart, orgId: req.organization?.id });
+          firstTokenLogged = true;
+        }
         send('text', { word: event.word });
       } else {
         finalAction = event.action;
