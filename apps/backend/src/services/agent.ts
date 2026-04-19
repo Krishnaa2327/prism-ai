@@ -148,6 +148,7 @@ export interface PageContext {
   title: string;
   headings: string[];
   elements: Array<{ tag: string; selector: string; text: string; type?: string; value?: string }>;
+  semanticSummary?: string;
 }
 
 // ─── DOM text sanitizer — strips newlines/control chars to prevent prompt injection ──
@@ -400,14 +401,12 @@ ${actionConfig!.url      ? `- url: "${actionConfig!.url}"` : ''}
 ${actionConfig!.fields   ? `- fields: ${JSON.stringify(actionConfig!.fields)} (replace empty strings with values from collectedData or user answer)` : ''}\n`
     : '';
 
-  const domSummary = pageContext && pageContext.elements.length > 0
-    ? `\nLIVE PAGE ELEMENTS (verified selectors — only use these):
-Page: ${sanitizeDomText(pageContext.title)} (${pageContext.url})
-${pageContext.headings.length ? `Headings: ${pageContext.headings.map(sanitizeDomText).join(' | ')}` : ''}
-Interactive elements:
-${pageContext.elements.map((e) =>
-  `  [${e.tag}${e.type ? `[${e.type}]` : ''}] selector="${sanitizeDomText(e.selector)}" label="${sanitizeDomText(e.text)}"${e.value ? ` value="${sanitizeDomText(e.value)}"` : ''}`
-).join('\n')}\n`
+  const domSummary = pageContext
+    ? pageContext.semanticSummary
+      ? `\nPAGE SEMANTIC SUMMARY:\n${pageContext.semanticSummary}\n\nLIVE PAGE ELEMENTS (verified selectors — only use these):\nPage: ${sanitizeDomText(pageContext.title)} (${pageContext.url})\n${pageContext.headings.length ? `Headings: ${pageContext.headings.map(sanitizeDomText).join(' | ')}` : ''}\nInteractive elements:\n${pageContext.elements.slice(0,30).map((e) => `  [${e.tag}${e.type ? `[${e.type}]` : ''}] selector="${sanitizeDomText(e.selector)}" label="${sanitizeDomText(e.text)}"${e.value ? ` value="${sanitizeDomText(e.value)}"` : ''}`).join('\n')}\n`
+      : pageContext.elements.length > 0
+        ? `\nLIVE PAGE ELEMENTS (verified selectors — only use these):\nPage: ${sanitizeDomText(pageContext.title)} (${pageContext.url})\n${pageContext.headings.length ? `Headings: ${pageContext.headings.map(sanitizeDomText).join(' | ')}` : ''}\nInteractive elements:\n${pageContext.elements.map((e) => `  [${e.tag}${e.type ? `[${e.type}]` : ''}] selector="${sanitizeDomText(e.selector)}" label="${sanitizeDomText(e.text)}"${e.value ? ` value="${sanitizeDomText(e.value)}"` : ''}`).join('\n')}\n`
+        : ''
     : '';
 
   // Skip KB search on init/verify turns — race with 1.5 s timeout
@@ -854,14 +853,12 @@ export async function runAgentGoal(opts: {
   };
 
   // Build domSummary the same way as prepareAgentCall
-  const domSummary = pageContext && pageContext.elements.length > 0
-    ? `\nLIVE PAGE ELEMENTS (verified selectors — only use these):
-Page: ${sanitizeDomText(pageContext.title)} (${pageContext.url})
-${pageContext.headings.length ? `Headings: ${pageContext.headings.map(sanitizeDomText).join(' | ')}` : ''}
-Interactive elements:
-${pageContext.elements.map((e) =>
-  `  [${e.tag}${e.type ? `[${e.type}]` : ''}] selector="${sanitizeDomText(e.selector)}" label="${sanitizeDomText(e.text)}"${e.value ? ` value="${sanitizeDomText(e.value)}"` : ''}`
-).join('\n')}\n`
+  const domSummary = pageContext
+    ? pageContext.semanticSummary
+      ? `\nPAGE SEMANTIC SUMMARY:\n${pageContext.semanticSummary}\n\nLIVE PAGE ELEMENTS (verified selectors — only use these):\nPage: ${sanitizeDomText(pageContext.title)} (${pageContext.url})\n${pageContext.headings.length ? `Headings: ${pageContext.headings.map(sanitizeDomText).join(' | ')}` : ''}\nInteractive elements:\n${pageContext.elements.slice(0,30).map((e) => `  [${e.tag}${e.type ? `[${e.type}]` : ''}] selector="${sanitizeDomText(e.selector)}" label="${sanitizeDomText(e.text)}"${e.value ? ` value="${sanitizeDomText(e.value)}"` : ''}`).join('\n')}\n`
+      : pageContext.elements.length > 0
+        ? `\nLIVE PAGE ELEMENTS (verified selectors — only use these):\nPage: ${sanitizeDomText(pageContext.title)} (${pageContext.url})\n${pageContext.headings.length ? `Headings: ${pageContext.headings.map(sanitizeDomText).join(' | ')}` : ''}\nInteractive elements:\n${pageContext.elements.map((e) => `  [${e.tag}${e.type ? `[${e.type}]` : ''}] selector="${sanitizeDomText(e.selector)}" label="${sanitizeDomText(e.text)}"${e.value ? ` value="${sanitizeDomText(e.value)}"` : ''}`).join('\n')}\n`
+        : ''
     : '';
 
   const historyText = turnHistory.length === 0

@@ -2,7 +2,7 @@
 // Manages the onboarding session, communicates with /api/v1/session/* endpoints,
 // and drives the goal-oriented UI.
 
-import { scanPage } from './scanner';
+import { scanPage, buildSemanticSummary } from './scanner';
 import { resolveFromIndex, HealStrategy } from './resolver';
 import { spotlight, beacon, arrowCallout, multiHighlight, removeSpotlight } from './highlighter';
 import { animatedFillFields } from './cursor';
@@ -408,6 +408,7 @@ export class CopilotManager {
   }): Promise<{ action: AgentAction; done: boolean; turnCount: number } | null> {
     const { goal, turnHistory, turnCount } = opts;
     const pageContext = scanPage();
+    const enrichedContext = { ...pageContext, semanticSummary: buildSemanticSummary() };
 
     try {
       const res = await fetch(`${this.apiUrl}/api/v1/session/act/goal`, {
@@ -416,7 +417,7 @@ export class CopilotManager {
         body: JSON.stringify({
           sessionId: this.session?.id ?? 'goal_session',
           goal,
-          pageContext,
+          pageContext: enrichedContext,
           turnHistory,
           turnCount,
         }),
