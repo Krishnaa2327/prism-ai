@@ -1,16 +1,31 @@
 // Single source of truth for plan limits and Stripe price IDs.
 // When you create products in Stripe dashboard, paste the price IDs here.
 
+export interface PlanFeatures {
+  failureInbox: boolean;      // Starter+
+  sessionReplay: boolean;     // Starter+
+  agentHealth: boolean;       // Starter+
+  emailEscalation: boolean;   // Starter+
+  abExperiments: boolean;     // Growth+
+  auditLog: boolean;          // Growth+
+  guardrails: boolean;        // Growth+
+  slackEscalation: boolean;   // Growth+
+  customRetention: boolean;   // Scale only
+  sso: boolean;               // Scale only
+  multilingual: boolean;      // All plans
+}
+
 export interface Plan {
   name: string;
   monthlyMessageLimit: number;
-  agentLimit: number;       // max OnboardingFlows; 0 = unlimited
-  mtuLimit: number;         // max Monthly Tracked Users; 0 = unlimited
-  mcpConnectorLimit: number;// max MCP connectors; 0 = unlimited
-  priceId: string | null;   // null = free (no Stripe price)
-  price: number;            // USD per month, for display only
-  inrPrice: number;         // INR per month, for India display
-  features: string[];       // shown on billing page
+  agentLimit: number;
+  mtuLimit: number;
+  mcpConnectorLimit: number;
+  priceId: string | null;
+  price: number;
+  inrPrice: number;
+  featureList: string[];
+  gates: PlanFeatures;
 }
 
 export function validatePricingConfig(): void {
@@ -23,6 +38,31 @@ export function validatePricingConfig(): void {
   }
 }
 
+const FREE_GATES: PlanFeatures = {
+  failureInbox: false, sessionReplay: false, agentHealth: false,
+  emailEscalation: false, abExperiments: false, auditLog: false,
+  guardrails: false, slackEscalation: false, customRetention: false,
+  sso: false, multilingual: true,
+};
+const STARTER_GATES: PlanFeatures = {
+  failureInbox: true, sessionReplay: true, agentHealth: true,
+  emailEscalation: true, abExperiments: false, auditLog: false,
+  guardrails: false, slackEscalation: false, customRetention: false,
+  sso: false, multilingual: true,
+};
+const GROWTH_GATES: PlanFeatures = {
+  failureInbox: true, sessionReplay: true, agentHealth: true,
+  emailEscalation: true, abExperiments: true, auditLog: true,
+  guardrails: true, slackEscalation: true, customRetention: false,
+  sso: false, multilingual: true,
+};
+const SCALE_GATES: PlanFeatures = {
+  failureInbox: true, sessionReplay: true, agentHealth: true,
+  emailEscalation: true, abExperiments: true, auditLog: true,
+  guardrails: true, slackEscalation: true, customRetention: true,
+  sso: true, multilingual: true,
+};
+
 export const PLANS: Record<string, Plan> = {
   free: {
     name: 'Free',
@@ -33,15 +73,17 @@ export const PLANS: Record<string, Plan> = {
     priceId: null,
     price: 0,
     inrPrice: 0,
-    features: [
+    featureList: [
       'Up to 3 AI agents',
       '100 Monthly Tracked Users',
       'White-label widget',
       'MCP connectors',
-      'Knowledge base (documents)',
+      'Knowledge base',
       'Basic analytics',
+      'Multilingual support (Hindi, Hinglish + 8 Indian languages)',
       'Community support',
     ],
+    gates: FREE_GATES,
   },
   starter: {
     name: 'Starter',
@@ -51,18 +93,19 @@ export const PLANS: Record<string, Plan> = {
     mcpConnectorLimit: 0,
     priceId: process.env.STRIPE_PRICE_STARTER ?? null,
     price: 99,
-    inrPrice: 799,
-    features: [
+    inrPrice: 7_999,
+    featureList: [
       'Up to 10 AI agents',
       '1,000 Monthly Tracked Users',
-      'White-label widget',
-      'MCP connectors',
-      'Knowledge base (documents)',
-      'Advanced analytics',
-      'Email support',
       'Failure inbox',
-      'Agent health monitoring',
+      'Session replay',
+      'Agent health panel',
+      'Email escalation alerts',
+      'Advanced analytics',
+      'Multilingual support',
+      'Email support (24h)',
     ],
+    gates: STARTER_GATES,
   },
   growth: {
     name: 'Growth',
@@ -72,18 +115,18 @@ export const PLANS: Record<string, Plan> = {
     mcpConnectorLimit: 0,
     priceId: process.env.STRIPE_PRICE_GROWTH ?? null,
     price: 299,
-    inrPrice: 2499,
-    features: [
+    inrPrice: 24_999,
+    featureList: [
       'Unlimited AI agents',
       '10,000 Monthly Tracked Users',
-      'White-label widget',
-      'MCP connectors',
-      'Knowledge base (documents)',
-      'Advanced analytics + ROI metrics',
-      'Priority email support',
-      'Audit log',
+      'A/B flow experiments',
+      'Audit log (90-day retention)',
       'Guardrails + sensitive field masking',
+      'Slack escalation integration',
+      'Priority email support',
+      'Multilingual support',
     ],
+    gates: GROWTH_GATES,
   },
   scale: {
     name: 'Scale',
@@ -93,20 +136,18 @@ export const PLANS: Record<string, Plan> = {
     mcpConnectorLimit: 0,
     priceId: process.env.STRIPE_PRICE_SCALE ?? null,
     price: 999,
-    inrPrice: 7999,
-    features: [
-      'Unlimited AI agents',
-      'Unlimited Monthly Tracked Users',
-      'White-label widget',
-      'MCP connectors',
-      'Knowledge base (documents)',
-      'Advanced analytics + ROI metrics',
-      'Dedicated Slack support',
-      'Audit log',
-      'Guardrails + sensitive field masking',
+    inrPrice: 79_999,
+    featureList: [
+      'Unlimited AI agents + MTU',
+      'Custom audit log retention',
       'SSO / SAML',
-      'SLA guarantee',
+      'SLA (99.9% uptime)',
+      'Dedicated onboarding call',
+      'Dedicated Slack support channel',
+      'Custom contract',
+      'Multilingual support',
     ],
+    gates: SCALE_GATES,
   },
 };
 

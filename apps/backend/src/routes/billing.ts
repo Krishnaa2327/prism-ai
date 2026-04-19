@@ -37,7 +37,7 @@ router.get('/status', authenticateJWT, async (req: AuthenticatedRequest, res: Re
     plan: org.planType,
     planName: plan.name,
     price: plan.price,
-    features: plan.features,
+    features: plan.featureList,
     // Messages
     monthlyMessageLimit: org.monthlyMessageLimit,
     messagesUsedThisMonth: messagesUsed,

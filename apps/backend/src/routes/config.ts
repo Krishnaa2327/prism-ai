@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { generateApiKey } from '../lib/apiKey';
 import { authenticateJWT } from '../middleware/auth';
+import { requireFeature } from '../middleware/planGate';
 import { AuthenticatedRequest } from '../types';
 
 const router = Router();
@@ -12,7 +13,7 @@ const AIConfigSchema = z.object({
 });
 
 // ─── PUT /api/v1/config/ai ───────────────────────────────────────────────────
-router.put('/ai', authenticateJWT, async (req: AuthenticatedRequest, res: Response) => {
+router.put('/ai', authenticateJWT, requireFeature('guardrails'), async (req: AuthenticatedRequest, res: Response) => {
   const { organizationId } = req.user!;
   const body = AIConfigSchema.parse(req.body);
 

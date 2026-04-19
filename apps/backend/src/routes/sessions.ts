@@ -4,10 +4,12 @@
 import { Router, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { authenticateJWT } from '../middleware/auth';
+import { requireFeature } from '../middleware/planGate';
 import { AuthenticatedRequest } from '../types';
 
 const router = Router();
 router.use(authenticateJWT);
+router.use(requireFeature('sessionReplay'));
 
 // ─── GET /api/v1/sessions/audit ──────────────────────────────────────────────
 // Dashboard audit log — every AI action for this org (JWT auth).

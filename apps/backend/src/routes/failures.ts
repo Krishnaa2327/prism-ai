@@ -1,10 +1,12 @@
 import { Router, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { authenticateJWT } from '../middleware/auth';
+import { requireFeature } from '../middleware/planGate';
 import { AuthenticatedRequest } from '../types';
 
 const router = Router();
 router.use(authenticateJWT);
+router.use(requireFeature('failureInbox'));
 
 /**
  * GET /api/v1/failures

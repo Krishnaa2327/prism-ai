@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { authenticateJWT } from '../middleware/auth';
+import { requireFeature } from '../middleware/planGate';
 import { AuthenticatedRequest } from '../types';
 
 const router = Router();
@@ -175,7 +176,7 @@ router.get('/intents', authenticateJWT, async (req: AuthenticatedRequest, res: R
 
 // ─── GET /api/v1/analytics/health ────────────────────────────────────────────
 // Agent health: last 10 sessions, 24-h success rate, avg step response time
-router.get('/health', authenticateJWT, async (req: AuthenticatedRequest, res: Response) => {
+router.get('/health', authenticateJWT, requireFeature('agentHealth'), async (req: AuthenticatedRequest, res: Response) => {
   const { organizationId } = req.user!;
   const now = new Date();
   const since24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
