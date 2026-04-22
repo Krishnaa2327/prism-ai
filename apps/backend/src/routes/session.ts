@@ -187,12 +187,23 @@ router.post('/start', async (req: AuthenticatedRequest, res: Response) => {
     }
   }
 
-  // find the org's active flow
-  const baseFlow = await prisma.onboardingFlow.findFirst({
-    where: { organizationId: req.organization!.id, isActive: true },
-    include: { steps: { orderBy: { order: 'asc' } } },
-    orderBy: { createdAt: 'asc' },
-  });
+  // find the org's active flow — prefer role-targeted, fall back to global (empty targetRoles)
+  const userRole = (metadata?.role as string | undefined) ?? '';
+  const baseFlow = await (async () => {
+    if (userRole) {
+      const roleFlow = await prisma.onboardingFlow.findFirst({
+        where: { organizationId: req.organization!.id, isActive: true, targetRoles: { has: userRole } },
+        include: { steps: { orderBy: { order: 'asc' } } },
+        orderBy: { createdAt: 'asc' },
+      });
+      if (roleFlow) return roleFlow;
+    }
+    return prisma.onboardingFlow.findFirst({
+      where: { organizationId: req.organization!.id, isActive: true, targetRoles: { isEmpty: true } },
+      include: { steps: { orderBy: { order: 'asc' } } },
+      orderBy: { createdAt: 'asc' },
+    });
+  })();
 
   if (!baseFlow || baseFlow.steps.length === 0) {
     res.json({ session: null, message: 'No active onboarding flow configured' });

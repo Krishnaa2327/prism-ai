@@ -172,6 +172,7 @@ model OnboardingFlow {
   triggerDelayMs      Int    @default(30000) @map("trigger_delay_ms")     // ms after page load
   urlPattern          String @default("") @map("url_pattern")             // comma-separated patterns, empty = all pages
   maxTriggersPerUser  Int    @default(0)   @map("max_triggers_per_user")  // 0 = unlimited
+  targetRoles         String[] @default([]) @map("target_roles")             // empty = all roles
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 

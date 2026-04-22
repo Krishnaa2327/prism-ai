@@ -5,6 +5,7 @@ import { authenticateJWT } from '../middleware/auth';
 import { checkAgentLimit } from '../middleware/rateLimit';
 import { AuthenticatedRequest } from '../types';
 import { FLOW_TEMPLATES } from '../lib/templates';
+import { broadcastToOrgWidgets } from '../lib/websocket';
 
 const router = Router();
 router.use(authenticateJWT);
@@ -101,13 +102,14 @@ router.post('/', async (req: AuthenticatedRequest, res: Response) => {
 
 // ─── PUT /api/v1/flow/:id — update flow ──────────────────────────────────────
 router.put('/:id', async (req: AuthenticatedRequest, res: Response) => {
-  const { name, description, isActive, triggerDelayMs, urlPattern, maxTriggersPerUser } = req.body as {
+  const { name, description, isActive, triggerDelayMs, urlPattern, maxTriggersPerUser, targetRoles } = req.body as {
     name?: string;
     description?: string;
     isActive?: boolean;
     triggerDelayMs?: number;
     urlPattern?: string;
     maxTriggersPerUser?: number;
+    targetRoles?: string[];
   };
   const flow = await prisma.onboardingFlow.updateMany({
     where: { id: req.params.id, organizationId: req.user!.organizationId },
@@ -118,8 +120,12 @@ router.put('/:id', async (req: AuthenticatedRequest, res: Response) => {
       ...(triggerDelayMs !== undefined && { triggerDelayMs }),
       ...(urlPattern !== undefined && { urlPattern }),
       ...(maxTriggersPerUser !== undefined && { maxTriggersPerUser }),
+      ...(targetRoles !== undefined && { targetRoles }),
     },
   });
+  if (flow.count > 0) {
+    broadcastToOrgWidgets(req.user!.organizationId, { type: 'flow_updated', flowId: req.params.id });
+  }
   res.json({ updated: flow.count > 0 });
 });
 

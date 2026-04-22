@@ -184,4 +184,35 @@ router.get('/trend', async (req: AuthenticatedRequest, res: Response) => {
   });
 });
 
+// ─── GET /api/v1/activation/flows ────────────────────────────────────────────
+// Per-flow completion stats: completionRate, totalSessions, completedSessions
+router.get('/flows', async (req: AuthenticatedRequest, res: Response) => {
+  const orgId = req.user!.organizationId;
+
+  const flows = await prisma.onboardingFlow.findMany({
+    where: { organizationId: orgId },
+    select: { id: true, name: true, isActive: true },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  const stats = await Promise.all(
+    flows.map(async (flow) => {
+      const [total, completed] = await Promise.all([
+        prisma.userOnboardingSession.count({ where: { organizationId: orgId, flowId: flow.id } }),
+        prisma.userOnboardingSession.count({ where: { organizationId: orgId, flowId: flow.id, status: 'completed' } }),
+      ]);
+      return {
+        flowId: flow.id,
+        flowName: flow.name,
+        isActive: flow.isActive,
+        totalSessions: total,
+        completedSessions: completed,
+        completionRate: total > 0 ? Math.round((completed / total) * 1000) / 10 : 0,
+      };
+    })
+  );
+
+  res.json({ flows: stats });
+});
+
 export default router;

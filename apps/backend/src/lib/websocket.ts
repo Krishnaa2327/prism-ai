@@ -49,6 +49,18 @@ export function notifySubscribers(conversationId: string, payload: object) {
   });
 }
 
+// ─── Org-level widget connections — for pushing flow updates to live widgets ──
+const orgWidgets = new Map<string, Set<WebSocket>>();
+
+export function broadcastToOrgWidgets(orgId: string, payload: object) {
+  const conns = orgWidgets.get(orgId);
+  if (!conns) return;
+  const msg = JSON.stringify(payload);
+  conns.forEach((ws) => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+  });
+}
+
 // ─── Boot the WebSocket server ────────────────────────────────────────────────
 
 export function attachWebSocketServer(httpServer: Server) {
@@ -90,6 +102,8 @@ export function attachWebSocketServer(httpServer: Server) {
         state.organizationId = org.id;
         state.authenticated = true;
         state.mode = 'widget';
+        if (!orgWidgets.has(org.id)) orgWidgets.set(org.id, new Set());
+        orgWidgets.get(org.id)!.add(ws);
         ws.send(JSON.stringify({ type: 'auth_ok' }));
         return;
       }
@@ -201,6 +215,10 @@ export function attachWebSocketServer(httpServer: Server) {
       // Clean up dashboard subscriptions
       if (state.subscribedConversationId) {
         subscribers.get(state.subscribedConversationId)?.delete(ws);
+      }
+      // Clean up widget org-broadcast registration
+      if (state.organizationId && state.mode === 'widget') {
+        orgWidgets.get(state.organizationId)?.delete(ws);
       }
     });
 
