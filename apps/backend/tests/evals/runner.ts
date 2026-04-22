@@ -13,6 +13,8 @@ export interface EvalScenario {
     semanticSummary?: string;
   };
   expectedActions: string[];
+  /** Phase 4: action types that must NOT appear — fails the scenario if seen */
+  forbiddenActions?: string[];
   maxTurns: number;
   tags: string[];
   seedTurnHistory?: GoalTurn[];
@@ -25,6 +27,8 @@ export interface EvalResult {
   turns: number;
   actionsProduced: string[];
   expectedActions: string[];
+  forbiddenActions: string[];
+  forbiddenViolations: string[];
   firstActionMatch: boolean;
   containsExpected: boolean;
   reachedCompletion: boolean;
@@ -64,16 +68,24 @@ export async function runScenario(scenario: EvalScenario): Promise<EvalResult> {
 
       if (action.type === 'goal_complete' || action.type === 'escalate_to_human') break;
       if (action.type === 'ask_clarification') break;
+      if (action.type === 'degrade_to_manual') break; // halt after degrade — user must respond
     }
 
     const firstActionMatch = actionsProduced[0] === scenario.expectedActions[0];
     const containsExpected = scenario.expectedActions.every((exp) => actionsProduced.includes(exp));
     const reachedCompletion = actionsProduced.includes('goal_complete');
-    const passed = firstActionMatch && (containsExpected || reachedCompletion);
+
+    // Phase 4: forbidden action check
+    const forbiddenActions = scenario.forbiddenActions ?? [];
+    const forbiddenViolations = forbiddenActions.filter((f) => actionsProduced.includes(f));
+    const forbiddenClean = forbiddenViolations.length === 0;
+
+    const passed = forbiddenClean && firstActionMatch && (containsExpected || reachedCompletion);
 
     return {
       scenarioId: scenario.id, description: scenario.description, passed,
       turns: actionsProduced.length, actionsProduced, expectedActions: scenario.expectedActions,
+      forbiddenActions, forbiddenViolations,
       firstActionMatch, containsExpected, reachedCompletion,
       durationMs: Date.now() - start, turnLatenciesMs,
     };
@@ -81,6 +93,7 @@ export async function runScenario(scenario: EvalScenario): Promise<EvalResult> {
     return {
       scenarioId: scenario.id, description: scenario.description, passed: false,
       turns: 0, actionsProduced, expectedActions: scenario.expectedActions,
+      forbiddenActions: scenario.forbiddenActions ?? [], forbiddenViolations: [],
       firstActionMatch: false, containsExpected: false, reachedCompletion: false,
       error: (err as Error).message, durationMs: Date.now() - start, turnLatenciesMs,
     };

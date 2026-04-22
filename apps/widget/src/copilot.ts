@@ -154,6 +154,30 @@ export class CopilotManager {
   constructor(apiKey: string, apiUrl: string) {
     this.apiKey = apiKey;
     this.apiUrl = apiUrl;
+
+    // Phase 5: pre-warm the backend DB connection pool during browser idle time
+    // so the first real agent turn doesn't pay cold-start latency.
+    // Uses requestIdleCallback if available, falls back to 2s setTimeout.
+    this.scheduleWarmup();
+  }
+
+  private scheduleWarmup(): void {
+    const doWarmup = () => {
+      fetch(`${this.apiUrl}/api/v1/session/warmup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': this.apiKey },
+        body: '{}',
+      }).catch(() => {}); // fully fire-and-forget
+    };
+
+    if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+      // Fire during browser idle time — zero impact on main thread
+      (window as Window & { requestIdleCallback: (cb: () => void, opts?: { timeout: number }) => void })
+        .requestIdleCallback(doWarmup, { timeout: 3000 });
+    } else {
+      // Fallback: fire after 2 seconds (enough time for page to be interactive)
+      setTimeout(doWarmup, 2000);
+    }
   }
 
   onAction(cb: (action: AgentAction) => void) {
@@ -445,9 +469,10 @@ export class CopilotManager {
     goal: string;
     turnHistory: Array<{ role: 'user' | 'assistant' | 'observe'; content: string }>;
     turnCount: number;
+    failedSelectors?: string[];
     onText?: (word: string) => void;
   }): Promise<{ action: AgentAction; done: boolean; turnCount: number } | null> {
-    const { goal, turnHistory, turnCount } = opts;
+    const { goal, turnHistory, turnCount, failedSelectors } = opts;
     const pageContext = scanPage();
     const enrichedContext = { ...pageContext, semanticSummary: buildSemanticSummary() };
 
@@ -461,6 +486,7 @@ export class CopilotManager {
           pageContext: enrichedContext,
           turnHistory,
           turnCount,
+          failedSelectors: failedSelectors ?? [],
         }),
       });
       if (!res.ok) return null;

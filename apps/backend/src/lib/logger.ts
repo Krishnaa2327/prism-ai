@@ -1,4 +1,13 @@
 /**
+ * High-resolution timer. Returns elapsed ms when called.
+ * Usage: const done = timer(); ... logger.latency('kb.search', done(), fields);
+ */
+export function timer(): () => number {
+  const start = process.hrtime.bigint();
+  return () => Number(process.hrtime.bigint() - start) / 1_000_000;
+}
+
+/**
  * Retry a promise-returning function with exponential backoff.
  */
 export async function withRetry<T>(
@@ -68,6 +77,10 @@ export const logger = {
 
   sessionEvent: (orgId: string, sessionId: string, event: string, fields?: LogFields) =>
     log('info', `session.${event}`, { orgId, sessionId, ...fields }),
+
+  /** Phase 5: structured latency event — shows up in Railway logs for P95 tracking */
+  latency: (operation: string, ms: number, fields?: LogFields) =>
+    log(ms > 800 ? 'warn' : 'info', 'latency', { operation, ms: Math.round(ms), ...fields }),
 
   httpError: (method: string, path: string, status: number, error: unknown) =>
     log('error', 'http.error', {

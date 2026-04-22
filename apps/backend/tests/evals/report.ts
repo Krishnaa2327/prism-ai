@@ -26,8 +26,12 @@ export function printReport(results: EvalResult[]): void {
     console.log(`   ${r.description}`);
     console.log(`   Expected: [${r.expectedActions.join(', ')}]`);
     console.log(`   Got:      [${r.actionsProduced.join(', ')}]`);
-    console.log(`   Turns: ${r.turns} | First match: ${r.firstActionMatch} | Completion: ${r.reachedCompletion} | ${r.durationMs}ms (avg turn: ${avgMs}ms)`);
+    if (r.forbiddenViolations.length > 0) {
+      console.log(`   ⛔ FORBIDDEN ACTIONS SEEN: [${r.forbiddenViolations.join(', ')}]`);
+    }
+    console.log(`   Turns: ${r.turns} | First match: ${r.firstActionMatch} | Completion: ${r.reachedCompletion} | ${r.durationMs}ms (avg turn: ${Math.round(r.turnLatenciesMs.reduce((s, v) => s + v, 0) / Math.max(r.turnLatenciesMs.length, 1))}ms)`);
     if (r.error) console.log(`   ERROR: ${r.error}`);
+
   }
 
   console.log('\n' + '═'.repeat(60));
