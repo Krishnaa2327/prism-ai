@@ -445,9 +445,10 @@ export class CopilotManager {
     goal: string;
     turnHistory: Array<{ role: 'user' | 'assistant' | 'observe'; content: string }>;
     turnCount: number;
+    failedSelectors?: string[];
     onText?: (word: string) => void;
   }): Promise<{ action: AgentAction; done: boolean; turnCount: number } | null> {
-    const { goal, turnHistory, turnCount } = opts;
+    const { goal, turnHistory, turnCount, failedSelectors } = opts;
     const pageContext = scanPage();
     const enrichedContext = { ...pageContext, semanticSummary: buildSemanticSummary() };
 
@@ -461,6 +462,7 @@ export class CopilotManager {
           pageContext: enrichedContext,
           turnHistory,
           turnCount,
+          failedSelectors: failedSelectors ?? [],
         }),
       });
       if (!res.ok) return null;

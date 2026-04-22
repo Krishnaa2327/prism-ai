@@ -906,6 +906,108 @@ ${pageHint}`.trim();
   }
 }
 
+// ─── Phase 4: Failure recovery helpers ──────────────────────────────────────
+
+/**
+ * Given the set of CSS selectors that failed, search the current DOM element
+ * list for elements whose label / placeholder / ariaLabel text semantically
+ * matches what the failed selector was probably targeting.
+ * Returns a formatted block to inject into the failure recovery prompt.
+ */
+function buildAlternativeSelectorBlock(
+  failedSelectors: Set<string>,
+  elements: PageContext['elements'],
+  goal: string,
+): string {
+  if (failedSelectors.size === 0) return '';
+
+  const lines: string[] = ['ALTERNATIVE SELECTORS (use these instead of the failed ones):'];
+  let found = false;
+
+  for (const failed of failedSelectors) {
+    // Extract a semantic hint from the failed selector string itself:
+    // e.g. "input[name='gstin']" → 'gstin', "button.save-btn" → 'save'
+    const hint = failed
+      .replace(/[\[\]"'=.#]/g, ' ')
+      .replace(/button|input|select|textarea|div|span|a\b/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+
+    // Also hint from the goal text
+    const goalWords = goal.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
+    const searchTerms = [...hint.split(' ').filter((w) => w.length > 2), ...goalWords];
+
+    const alternatives: string[] = [];
+    for (const el of elements) {
+      if (failed === el.selector) continue; // same selector — skip
+      const haystack = [
+        el.text, el.selector,
+        (el as Record<string, unknown>).placeholder as string ?? '',
+        (el as Record<string, unknown>).ariaLabel as string ?? '',
+      ].join(' ').toLowerCase();
+
+      const score = searchTerms.filter((term) => haystack.includes(term)).length;
+      if (score >= 1) {
+        alternatives.push(`  • "${el.selector}" (label: "${el.text}")`);
+        if (alternatives.length >= 3) break;
+      }
+    }
+
+    if (alternatives.length > 0) {
+      lines.push(`For failed selector "${failed}":`);
+      lines.push(...alternatives);
+      found = true;
+    }
+  }
+
+  if (!found) return '';
+  return lines.join('\n');
+}
+
+/**
+ * Detects whether the current page URL diverged from where a prior navigate
+ * action was headed. Returns a formatted block if a mismatch is found.
+ */
+function detectWrongPage(
+  pageContext: PageContext,
+  turnHistory: GoalTurn[],
+): string {
+  // Find the last navigate action in assistant turns
+  for (let i = turnHistory.length - 1; i >= 0; i--) {
+    const turn = turnHistory[i];
+    if (turn.role !== 'assistant') continue;
+    const m = turn.content.match(/navigate.*?([/][\w/%-]+)/i);
+    if (!m) continue;
+    const expectedPath = m[1];
+    const currentPath = pageContext.url;
+    // If current URL doesn't include the expected path segment, flag it
+    if (expectedPath.length > 1 && !currentPath.includes(expectedPath.replace(/\/$/, ''))) {
+      return `WRONG PAGE DETECTED: Navigation targeted "${expectedPath}" but current page is "${currentPath}".\nYou must navigate to the correct page or replan if that page is inaccessible.`;
+    }
+    break; // only check the most recent navigate
+  }
+  return '';
+}
+
+/**
+ * Builds a specific degradation instruction from page context and failed
+ * selectors, used by the escalation guard when it intercepts an early
+ * escalate_to_human call.
+ */
+function buildDegradationInstruction(
+  goal: string,
+  pageContext: PageContext,
+  failedSelectors: Set<string>,
+): string {
+  const pageName = pageContext.title || 'current page';
+  const failedList = Array.from(failedSelectors).slice(0, 2).join(', ');
+  const hint = failedList
+    ? ` The automated action on ${failedList} could not complete.`
+    : '';
+  return `On the "${pageName}" page, manually complete: ${goal}.${hint} Look for the relevant input field or button and perform the action directly.`;
+}
+
 // ─── Goal mode ────────────────────────────────────────────────────────────────
 
 export interface GoalTurn {
@@ -951,20 +1053,32 @@ export async function runAgentGoal(opts: {
     : turnHistory.map((t, i) => `Turn ${i + 1} [${t.role}]: ${t.content}`).join('\n');
 
   const observeCount = turnHistory.filter((t) => t.role === 'observe').length;
-  const failureContextBlock = observeCount > 0 ? `
 
-FAILURE CONTEXT:
-A previous action did not change the page (${observeCount} failed attempt${observeCount > 1 ? 's' : ''}).
-The selector may be stale or the element may have moved.
+  // ── Phase 4: Extract concrete failed selectors and DOM alternatives ──────────
+  const failedSelectors = new Set<string>();
+  for (const turn of turnHistory) {
+    if (turn.role !== 'observe') continue;
+    const m = turn.content.match(/selector\s+"([^"]+)"/);
+    if (m) failedSelectors.add(m[1]);
+  }
+  const alternativeSelectorBlock = buildAlternativeSelectorBlock(failedSelectors, pageContext.elements, goal);
+  const wrongPageBlock = detectWrongPage(pageContext, turnHistory);
+
+  const failureContextBlock = (observeCount > 0 || wrongPageBlock) ? `
+
+FAILURE RECOVERY CONTEXT:
+${observeCount > 0 ? `A previous action did not change the page (${observeCount} failed attempt${observeCount > 1 ? 's' : ''}).` : ''}
+${wrongPageBlock || ''}
+${alternativeSelectorBlock}
 
 Recovery strategy (in order):
-1. Try selecting by visible label text instead of CSS selector
-2. Try selecting by input placeholder or aria-label attribute
-3. Try selecting by proximity to the nearest heading or section title
-4. If you have tried 2+ different approaches and all failed, call degrade_to_manual — do NOT call escalate_to_human
+1. Try the ALTERNATIVE SELECTORS listed above — they match the same element by label, placeholder, or aria-label
+2. If no alternative listed, try selecting by visible label text, input placeholder, or proximity to a heading
+3. If you have exhausted 2+ different selectors and all failed, call degrade_to_manual — do NOT call escalate_to_human
+4. Only escalate_to_human after degrade_to_manual has been shown and the user chose "Get human help"
 
 Never repeat a selector that appears in a failed observe turn.
-${observeCount >= 3 ? '\nYou have reached 3 failures. You MUST call degrade_to_manual now.' : ''}` : '';
+${observeCount >= 3 ? '\nYou have reached 3 failures. You MUST call degrade_to_manual now — not escalate_to_human.' : ''}` : '';
 
   const systemPrompt = `You are Prism, an AI agent inside "${org.name}".
 
@@ -981,12 +1095,13 @@ You must look at the current page and decide the single best next action to make
 RULES:
 - Call goal_complete ONLY when the goal is provably achieved based on what you can see on the page
 - Call ask_clarification ONLY when you genuinely cannot proceed without user input — one question max
-- Call escalate_to_human ONLY if you are completely stuck after multiple attempts
+- Call escalate_to_human ONLY after degrade_to_manual has already been tried and the user chose to escalate
 - Only use selectors that appear verbatim in LIVE PAGE ELEMENTS
 - Keep all user-facing text under 25 words
 - Never repeat an action that already failed — try a different approach
 - Do not call complete_step or celebrate_milestone in goal mode — use goal_complete instead
 - NEVER fill or read fields of type password, or whose name/label contains: password, ssn, social security, credit card, card number, cvv, cvc, or pin — skip them entirely
+- If stuck after 2+ attempts, call degrade_to_manual BEFORE escalate_to_human
 
 ${org.customInstructions ?? ''}${failureContextBlock}`.trim();
 
@@ -1057,6 +1172,32 @@ ${org.customInstructions ?? ''}${failureContextBlock}`.trim();
       input = JSON.parse(call.function.arguments) as Record<string, unknown>;
     } catch {
       return { type: 'chat', content: 'Let me help you with that.' };
+    }
+
+    // ── Phase 4: Escalation guard ───────────────────────────────────────────
+    // If the agent calls escalate_to_human before degrade_to_manual has fired,
+    // intercept and redirect to degrade_to_manual. Enforces recovery ladder:
+    // retry → degrade → escalate.
+    if (call.function.name === 'escalate_to_human' && observeCount > 0) {
+      const degradeAlreadyShown = turnHistory.some(
+        (t) => t.role === 'assistant' && (
+          t.content.toLowerCase().includes('manual step') ||
+          t.content.toLowerCase().includes('manually')
+        )
+      );
+      if (!degradeAlreadyShown) {
+        logger.warn('agent.goal.escalation_intercepted', {
+          orgId: org.id,
+          sessionId: opts.sessionId,
+          observeCount,
+          redirectingTo: 'degrade_to_manual',
+        });
+        return {
+          type: 'degrade_to_manual',
+          instruction: buildDegradationInstruction(goal, pageContext, failedSelectors),
+          reason: `Automation could not reliably execute the action after ${observeCount} attempt${observeCount > 1 ? 's' : ''}. The page element may have changed.`,
+        };
+      }
     }
 
     const action = parseToolCall(call.function.name, input);
