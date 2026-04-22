@@ -274,6 +274,10 @@ export const api = {
       apiFetch<{ success: boolean; message: string }>(`/api/v1/integrations/${type}/test`, { method: 'POST' }),
   },
 
+  insights: {
+    list: () => apiFetch<InsightsResponse>('/api/v1/analytics/insights'),
+  },
+
   activation: {
     overview: () => apiFetch<ActivationOverview>('/api/v1/activation/overview'),
     funnel: () => apiFetch<{ flowName: string | null; totalSessions: number; funnel: FunnelStep[] }>('/api/v1/activation/funnel'),
@@ -889,6 +893,23 @@ export interface AgentHealth {
   avgResponseMs: number | null;
   windowHours: number;
   sessions: AgentHealthSession[];
+}
+
+export interface Insight {
+  id: string;
+  type: 'pain_point' | 'knowledge_gap' | 'navigation_confusion' | 'frequent_question' | 'low_engagement';
+  severity: 'high' | 'medium' | 'low';
+  title: string;
+  description: string;
+  count: number;
+  examples: string[];
+  detectedAt: string;
+}
+
+export interface InsightsResponse {
+  insights: Insight[];
+  generatedAt: string;
+  days: number;
 }
 
 export interface AuditLogEntry {

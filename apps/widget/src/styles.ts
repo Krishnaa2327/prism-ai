@@ -549,6 +549,88 @@ export function injectStyles(primaryColor: string) {
       cursor: pointer;
       font-size: 12px;
     }
+
+    /* ── Plan checklist card ────────────────────────────────────────────────── */
+    .oai-plan-card {
+      background: white;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 14px 14px 10px;
+      align-self: stretch;
+      animation: oai-msg-in 0.25s ease both;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+    }
+    .oai-plan-header {
+      font-size: 11px;
+      font-weight: 700;
+      color: ${primaryColor};
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 10px;
+    }
+    .oai-plan-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .oai-plan-phase {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      transition: background 0.2s ease;
+    }
+    .oai-plan-phase.oai-plan-pending {
+      opacity: 0.55;
+    }
+    .oai-plan-phase.oai-plan-active {
+      background: rgba(99,102,241,0.07);
+    }
+    .oai-plan-phase.oai-plan-done {
+      opacity: 0.75;
+    }
+    .oai-plan-phase-circle {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      border: 2px solid #cbd5e1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      font-weight: 700;
+      color: #94a3b8;
+      flex-shrink: 0;
+      margin-top: 1px;
+      transition: all 0.3s ease;
+    }
+    .oai-plan-phase.oai-plan-active .oai-plan-phase-circle {
+      border-color: ${primaryColor};
+      color: ${primaryColor};
+      background: rgba(99,102,241,0.1);
+    }
+    .oai-plan-phase.oai-plan-done .oai-plan-phase-circle {
+      border-color: #22c55e;
+      background: #22c55e;
+      color: white;
+    }
+    .oai-plan-phase-title {
+      font-size: 12.5px;
+      font-weight: 600;
+      color: #1e293b;
+      line-height: 1.3;
+    }
+    .oai-plan-phase.oai-plan-done .oai-plan-phase-title {
+      text-decoration: line-through;
+      color: #94a3b8;
+    }
+    .oai-plan-phase-desc {
+      font-size: 11px;
+      color: #64748b;
+      margin-top: 2px;
+      line-height: 1.4;
+    }
   `;
 
   const style = document.createElement('style');

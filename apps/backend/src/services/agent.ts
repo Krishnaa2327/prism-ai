@@ -5,7 +5,7 @@ import { executeApiCall, interpolate } from './apicall';
 import { assertPublicUrl } from '../lib/ipGuard';
 import { searchKnowledgeBase } from './knowledge';
 import { loadMcpTools, toOpenAITools, callMcpTool, resolveMcpCall, ConnectorToolBundle } from './mcp';
-import { logger, withRetry } from '../lib/logger';
+import { logger, withRetry, timer } from '../lib/logger';
 
 let _openai: OpenAI | null = null;
 const openai = () => { if (!_openai) _openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY }); return _openai; };
@@ -40,7 +40,7 @@ const AGENT_TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
         properties: {
           type: {
             type: 'string',
-            enum: ['fill_form', 'click', 'navigate', 'highlight'],
+            enum: ['fill_form', 'click', 'navigate', 'highlight', 'hover_tip'],
           },
           selector: { type: 'string', description: 'CSS selector for click or highlight (must be from live page elements)' },
           url:      { type: 'string', description: 'URL for navigate action' },
@@ -418,15 +418,17 @@ ${actionConfig!.fields   ? `- fields: ${JSON.stringify(actionConfig!.fields)} (r
         : ''
     : '';
 
-  // Skip KB search on init/verify turns — race with 1.5 s timeout
+  // Skip KB search on init/verify turns — 800ms cap (Phase 5 latency budget)
+  const kbTimer = timer();
   const kbResults = (isInit || isVerify)
     ? []
     : await Promise.race([
         searchKnowledgeBase(org.id, userMessage).catch(() => []),
         new Promise<Awaited<ReturnType<typeof searchKnowledgeBase>>>((resolve) =>
-          setTimeout(() => resolve([]), 1500)
+          setTimeout(() => resolve([]), 800)  // Phase 5: tightened from 1500ms to 800ms
         ),
       ]);
+  if (!isInit && !isVerify) logger.latency('kb.search', kbTimer(), { orgId: org.id, hits: kbResults.length });
 
   const kbSection = kbResults.length > 0
     ? `\nKNOWLEDGE BASE:\n${kbResults.map((r) => `[${r.title}]\n${r.content.slice(0, 500)}`).join('\n\n')}\n`
@@ -435,9 +437,11 @@ ${actionConfig!.fields   ? `- fields: ${JSON.stringify(actionConfig!.fields)} (r
   // ── MCP tools ────────────────────────────────────────────────────────────────
   // Load enabled connectors and their tool lists in parallel with the KB search.
   // Skip on init/verify turns (no real user query to dispatch against).
+  const mcpTimer = timer();
   const mcpBundles: ConnectorToolBundle[] = (isInit || isVerify)
     ? []
     : await loadMcpTools(org.id).catch(() => []);
+  if (!isInit && !isVerify && mcpBundles.length > 0) logger.latency('mcp.load', mcpTimer(), { orgId: org.id, connectors: mcpBundles.length });
 
   const mcpOAITools = toOpenAITools(mcpBundles);
 
@@ -830,6 +834,184 @@ export async function* runAgentStream(
   yield { type: 'action', action: action ?? { type: 'chat', content: 'Let me help you with that.' } };
 }
 
+// ─── Plan mode ────────────────────────────────────────────────────────────────
+
+export interface GoalPlanPhase {
+  id: string;
+  title: string;
+  description: string;
+}
+
+export async function runAgentPlan(opts: {
+  org: Organization;
+  goal: string;
+  pageContext?: PageContext;
+}): Promise<GoalPlanPhase[]> {
+  const { org, goal, pageContext } = opts;
+
+  const planTool: OpenAI.Chat.ChatCompletionTool = {
+    type: 'function',
+    function: {
+      name: 'create_plan',
+      description: 'Break the user goal into 2–5 sequential phases',
+      parameters: {
+        type: 'object',
+        properties: {
+          phases: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id:          { type: 'string' },
+                title:       { type: 'string', description: 'Action title, max 6 words' },
+                description: { type: 'string', description: 'One sentence: what happens in this phase' },
+              },
+              required: ['id', 'title', 'description'],
+            },
+          },
+        },
+        required: ['phases'],
+      },
+    },
+  };
+
+  const pageHint = pageContext
+    ? `Current page: ${sanitizeDomText(pageContext.title)} (${pageContext.url})`
+    : '';
+
+  const systemPrompt = `You are Prism, planning a multi-step workflow inside "${org.name}".
+Break the user's goal into 2–5 sequential, concrete phases. Each phase is one focused task completable on a single page or screen.
+Phase titles must be under 6 words and action-oriented (e.g. "Create company profile", "Add payment method").
+${pageHint}`.trim();
+
+  const response = await withRetry(
+    () => openai().chat.completions.create({
+      model: 'gpt-4o-mini',
+      max_tokens: 512,
+      temperature: 0,
+      tools: [planTool],
+      tool_choice: { type: 'function', function: { name: 'create_plan' } },
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: goal },
+      ],
+    }),
+    { retries: 2, delayMs: 600, label: `agent.plan org=${org.id}` }
+  );
+
+  const call = response.choices[0].message.tool_calls?.[0];
+  if (!call) return [{ id: 'phase_1', title: goal.slice(0, 40), description: 'Complete the requested task.' }];
+
+  try {
+    const input = JSON.parse(call.function.arguments) as { phases: GoalPlanPhase[] };
+    return input.phases.map((p, i) => ({ ...p, id: p.id || `phase_${i + 1}` }));
+  } catch {
+    return [{ id: 'phase_1', title: goal.slice(0, 40), description: 'Complete the requested task.' }];
+  }
+}
+
+// ─── Phase 4: Failure recovery helpers ──────────────────────────────────────
+
+/**
+ * Given the set of CSS selectors that failed, search the current DOM element
+ * list for elements whose label / placeholder / ariaLabel text semantically
+ * matches what the failed selector was probably targeting.
+ * Returns a formatted block to inject into the failure recovery prompt.
+ */
+function buildAlternativeSelectorBlock(
+  failedSelectors: Set<string>,
+  elements: PageContext['elements'],
+  goal: string,
+): string {
+  if (failedSelectors.size === 0) return '';
+
+  const lines: string[] = ['ALTERNATIVE SELECTORS (use these instead of the failed ones):'];
+  let found = false;
+
+  for (const failed of failedSelectors) {
+    // Extract a semantic hint from the failed selector string itself:
+    // e.g. "input[name='gstin']" → 'gstin', "button.save-btn" → 'save'
+    const hint = failed
+      .replace(/[\[\]"'=.#]/g, ' ')
+      .replace(/button|input|select|textarea|div|span|a\b/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+
+    // Also hint from the goal text
+    const goalWords = goal.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
+    const searchTerms = [...hint.split(' ').filter((w) => w.length > 2), ...goalWords];
+
+    const alternatives: string[] = [];
+    for (const el of elements) {
+      if (failed === el.selector) continue; // same selector — skip
+      const haystack = [
+        el.text, el.selector,
+        (el as Record<string, unknown>).placeholder as string ?? '',
+        (el as Record<string, unknown>).ariaLabel as string ?? '',
+      ].join(' ').toLowerCase();
+
+      const score = searchTerms.filter((term) => haystack.includes(term)).length;
+      if (score >= 1) {
+        alternatives.push(`  • "${el.selector}" (label: "${el.text}")`);
+        if (alternatives.length >= 3) break;
+      }
+    }
+
+    if (alternatives.length > 0) {
+      lines.push(`For failed selector "${failed}":`);
+      lines.push(...alternatives);
+      found = true;
+    }
+  }
+
+  if (!found) return '';
+  return lines.join('\n');
+}
+
+/**
+ * Detects whether the current page URL diverged from where a prior navigate
+ * action was headed. Returns a formatted block if a mismatch is found.
+ */
+function detectWrongPage(
+  pageContext: PageContext,
+  turnHistory: GoalTurn[],
+): string {
+  // Find the last navigate action in assistant turns
+  for (let i = turnHistory.length - 1; i >= 0; i--) {
+    const turn = turnHistory[i];
+    if (turn.role !== 'assistant') continue;
+    const m = turn.content.match(/navigate.*?([/][\w/%-]+)/i);
+    if (!m) continue;
+    const expectedPath = m[1];
+    const currentPath = pageContext.url;
+    // If current URL doesn't include the expected path segment, flag it
+    if (expectedPath.length > 1 && !currentPath.includes(expectedPath.replace(/\/$/, ''))) {
+      return `WRONG PAGE DETECTED: Navigation targeted "${expectedPath}" but current page is "${currentPath}".\nYou must navigate to the correct page or replan if that page is inaccessible.`;
+    }
+    break; // only check the most recent navigate
+  }
+  return '';
+}
+
+/**
+ * Builds a specific degradation instruction from page context and failed
+ * selectors, used by the escalation guard when it intercepts an early
+ * escalate_to_human call.
+ */
+function buildDegradationInstruction(
+  goal: string,
+  pageContext: PageContext,
+  failedSelectors: Set<string>,
+): string {
+  const pageName = pageContext.title || 'current page';
+  const failedList = Array.from(failedSelectors).slice(0, 2).join(', ');
+  const hint = failedList
+    ? ` The automated action on ${failedList} could not complete.`
+    : '';
+  return `On the "${pageName}" page, manually complete: ${goal}.${hint} Look for the relevant input field or button and perform the action directly.`;
+}
+
 // ─── Goal mode ────────────────────────────────────────────────────────────────
 
 export interface GoalTurn {
@@ -875,20 +1057,35 @@ export async function runAgentGoal(opts: {
     : turnHistory.map((t, i) => `Turn ${i + 1} [${t.role}]: ${t.content}`).join('\n');
 
   const observeCount = turnHistory.filter((t) => t.role === 'observe').length;
-  const failureContextBlock = observeCount > 0 ? `
 
-FAILURE CONTEXT:
-A previous action did not change the page (${observeCount} failed attempt${observeCount > 1 ? 's' : ''}).
-The selector may be stale or the element may have moved.
+  // Phase 5: start per-turn latency timer
+  const turnTimer = timer();
+
+  // ── Phase 4: Extract concrete failed selectors and DOM alternatives ──────────
+  const failedSelectors = new Set<string>();
+  for (const turn of turnHistory) {
+    if (turn.role !== 'observe') continue;
+    const m = turn.content.match(/selector\s+"([^"]+)"/);
+    if (m) failedSelectors.add(m[1]);
+  }
+  const alternativeSelectorBlock = buildAlternativeSelectorBlock(failedSelectors, pageContext.elements, goal);
+  const wrongPageBlock = detectWrongPage(pageContext, turnHistory);
+
+  const failureContextBlock = (observeCount > 0 || wrongPageBlock) ? `
+
+FAILURE RECOVERY CONTEXT:
+${observeCount > 0 ? `A previous action did not change the page (${observeCount} failed attempt${observeCount > 1 ? 's' : ''}).` : ''}
+${wrongPageBlock || ''}
+${alternativeSelectorBlock}
 
 Recovery strategy (in order):
-1. Try selecting by visible label text instead of CSS selector
-2. Try selecting by input placeholder or aria-label attribute
-3. Try selecting by proximity to the nearest heading or section title
-4. If you have tried 2+ different approaches and all failed, call degrade_to_manual — do NOT call escalate_to_human
+1. Try the ALTERNATIVE SELECTORS listed above — they match the same element by label, placeholder, or aria-label
+2. If no alternative listed, try selecting by visible label text, input placeholder, or proximity to a heading
+3. If you have exhausted 2+ different selectors and all failed, call degrade_to_manual — do NOT call escalate_to_human
+4. Only escalate_to_human after degrade_to_manual has been shown and the user chose "Get human help"
 
 Never repeat a selector that appears in a failed observe turn.
-${observeCount >= 3 ? '\nYou have reached 3 failures. You MUST call degrade_to_manual now.' : ''}` : '';
+${observeCount >= 3 ? '\nYou have reached 3 failures. You MUST call degrade_to_manual now — not escalate_to_human.' : ''}` : '';
 
   const systemPrompt = `You are Prism, an AI agent inside "${org.name}".
 
@@ -905,11 +1102,13 @@ You must look at the current page and decide the single best next action to make
 RULES:
 - Call goal_complete ONLY when the goal is provably achieved based on what you can see on the page
 - Call ask_clarification ONLY when you genuinely cannot proceed without user input — one question max
-- Call escalate_to_human ONLY if you are completely stuck after multiple attempts
+- Call escalate_to_human ONLY after degrade_to_manual has already been tried and the user chose to escalate
 - Only use selectors that appear verbatim in LIVE PAGE ELEMENTS
 - Keep all user-facing text under 25 words
 - Never repeat an action that already failed — try a different approach
 - Do not call complete_step or celebrate_milestone in goal mode — use goal_complete instead
+- NEVER fill or read fields of type password, or whose name/label contains: password, ssn, social security, credit card, card number, cvv, cvc, or pin — skip them entirely
+- If stuck after 2+ attempts, call degrade_to_manual BEFORE escalate_to_human
 
 ${org.customInstructions ?? ''}${failureContextBlock}`.trim();
 
@@ -941,10 +1140,19 @@ ${org.customInstructions ?? ''}${failureContextBlock}`.trim();
 
   const GOAL_TURN_TIMEOUT_MS = 8_000;
 
+  // Phase 5: Smart model routing for goal turns.
+  // First turn or turns with KB context need gpt-4o (complex reasoning).
+  // Subsequent retry/action turns (already have history, no KB) use gpt-4o-mini
+  // to hit the <1.5s first-token target — saves ~40% latency on majority of turns.
+  const isFirstGoalTurn = turnHistory.length === 0;
+  const hasKbInContext = false; // goal mode doesn't use KB currently
+  const needsBigModel = isFirstGoalTurn || hasKbInContext || wrongPageBlock.length > 0;
+  const goalModel = needsBigModel ? 'gpt-4o' : 'gpt-4o-mini';
+
   const rawResponse = await withRetry(
     () => Promise.race([
       openai().chat.completions.create({
-        model: 'gpt-4o',
+        model: goalModel,  // Phase 5: gpt-4o-mini for retry turns
         max_tokens: 1500,
         temperature: 0,
         tools,
@@ -967,10 +1175,25 @@ ${org.customInstructions ?? ''}${failureContextBlock}`.trim();
 
   const response = rawResponse;
   const msg = response.choices[0].message;
-  logger.agentAction(org.id, opts.sessionId, msg.tool_calls?.[0]?.function?.name ?? 'none', {
-    goalMode: true,
-    model: 'gpt-4o',
+  const actionName = msg.tool_calls?.[0]?.function?.name ?? 'none';
+
+  // Phase 5: log total goal turn latency per model
+  logger.latency('agent.goal.turn', turnTimer(), {
+    orgId: org.id,
+    sessionId: opts.sessionId,
+    model: goalModel,
+    action: actionName,
+    observeCount,
     tokens: response.usage?.total_tokens,
+    failedSelectors: failedSelectors.size,
+  });
+
+  logger.agentAction(org.id, opts.sessionId, actionName, {
+    goalMode: true,
+    model: goalModel,
+    tokens: response.usage?.total_tokens,
+    failedSelectors: failedSelectors.size,
+    observeCount,
   });
 
   if (msg.tool_calls && msg.tool_calls.length > 0) {
@@ -980,6 +1203,32 @@ ${org.customInstructions ?? ''}${failureContextBlock}`.trim();
       input = JSON.parse(call.function.arguments) as Record<string, unknown>;
     } catch {
       return { type: 'chat', content: 'Let me help you with that.' };
+    }
+
+    // ── Phase 4: Escalation guard ───────────────────────────────────────────
+    // If the agent calls escalate_to_human before degrade_to_manual has fired,
+    // intercept and redirect to degrade_to_manual. Enforces recovery ladder:
+    // retry → degrade → escalate.
+    if (call.function.name === 'escalate_to_human' && observeCount > 0) {
+      const degradeAlreadyShown = turnHistory.some(
+        (t) => t.role === 'assistant' && (
+          t.content.toLowerCase().includes('manual step') ||
+          t.content.toLowerCase().includes('manually')
+        )
+      );
+      if (!degradeAlreadyShown) {
+        logger.warn('agent.goal.escalation_intercepted', {
+          orgId: org.id,
+          sessionId: opts.sessionId,
+          observeCount,
+          redirectingTo: 'degrade_to_manual',
+        });
+        return {
+          type: 'degrade_to_manual',
+          instruction: buildDegradationInstruction(goal, pageContext, failedSelectors),
+          reason: `Automation could not reliably execute the action after ${observeCount} attempt${observeCount > 1 ? 's' : ''}. The page element may have changed.`,
+        };
+      }
     }
 
     const action = parseToolCall(call.function.name, input);

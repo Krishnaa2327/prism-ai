@@ -15,6 +15,7 @@ import {
   addMessage, addFeedbackButtons, tryParseSteps, addStepsCard,
   addChips, addActionToast, addCelebration, addStepPill,
   renderStepProgress, createStreamingBubble,
+  renderPlanChecklist, updatePlanPhase, PlanPhase,
 } from './ui';
 
 export class OnboardAIWidget {
@@ -33,6 +34,13 @@ export class OnboardAIWidget {
   private goalTurnCount = 0;
   private goalRunning = false;
   private goalFailureCount = 0;
+  private goalFailedSelectors = new Set<string>(); // Phase 4: accumulated failed selectors
+
+
+  // ─── Plan mode state ─────────────────────────────────────────────────────
+  private planActive = false;
+  private planPhases: PlanPhase[] = [];
+  private planCurrentPhaseIdx = 0;
 
   // DOM refs
   private messagesEl!: HTMLElement;
@@ -360,8 +368,45 @@ export class OnboardAIWidget {
     this.goalTurnCount = 0;
     this.goalRunning = true;
     this.goalFailureCount = 0;
+    this.goalFailedSelectors = new Set(); // Phase 4: reset on new goal
 
     addMessage(this.messagesEl, goal, 'user');
+
+    const thinkingDiv = createStreamingBubble(this.messagesEl);
+    thinkingDiv.textContent = 'Planning your steps…';
+    thinkingDiv.classList.remove('oai-streaming');
+
+    const phases = await this.copilot.sendPlanRequest(goal);
+    thinkingDiv.remove();
+
+    if (phases && phases.length > 1) {
+      this.planPhases = phases;
+      this.planCurrentPhaseIdx = 0;
+      this.planActive = true;
+      renderPlanChecklist(this.messagesEl, phases);
+      await this.startNextPlanPhase();
+    } else {
+      await this.runGoalTurn();
+    }
+  }
+
+  private async startNextPlanPhase() {
+    const phase = this.planPhases[this.planCurrentPhaseIdx];
+    if (!phase) {
+      addCelebration(this.messagesEl, '✅ All done!', `Completed all ${this.planPhases.length} phases.`);
+      this.goalRunning = false;
+      this.goalMode = false;
+      this.planActive = false;
+      return;
+    }
+    updatePlanPhase(phase.id, 'active');
+    addStepPill(this.messagesEl, `Phase ${this.planCurrentPhaseIdx + 1} of ${this.planPhases.length}: ${phase.title}`);
+    this.goalText = `${phase.title}: ${phase.description}`;
+    this.goalTurnHistory = [];
+    this.goalTurnCount = 0;
+    this.goalFailureCount = 0;
+    this.goalFailedSelectors = new Set();
+    this.goalRunning = true;
     await this.runGoalTurn();
   }
 
@@ -397,6 +442,8 @@ export class OnboardAIWidget {
       goal: this.goalText,
       turnHistory: this.goalTurnHistory,
       turnCount: this.goalTurnCount,
+      // Phase 4: pass accumulated failed selectors for backend alternative lookup
+      failedSelectors: Array.from(this.goalFailedSelectors),
     });
 
     streamDiv.remove();
@@ -421,25 +468,43 @@ export class OnboardAIWidget {
 
       const changed = await this.waitForDomChange(before, 1500);
       if (!changed) {
-        const selector = (action.payload.selector as string | undefined) ??
-          Object.keys((action.payload.fields as Record<string, string> | undefined) ?? {})[0] ?? null;
+        // Phase 4: Extract the exact selector that failed and accumulate it
+        const selector = action.actionType === 'fill_form'
+          ? Object.keys((action.payload.fields as Record<string, string> | undefined) ?? {})[0] ?? null
+          : (action.payload.selector as string | undefined) ?? null;
+
+        if (selector) this.goalFailedSelectors.add(selector);
+
+        // Use quoted format so backend regex `selector "..."`  parses reliably
+        const selectorDisplay = selector ? `"${selector}"` : '"unknown"';
         this.goalTurnHistory.push({
           role: 'observe',
-          content: `Action attempted on selector "${selector ?? 'unknown'}" but page did not change. Selector may be stale.`,
+          content: `Action ${action.actionType} attempted on selector ${selectorDisplay} but page did not change. Selector may be stale.`,
         });
         this.goalFailureCount++;
         this.copilot.reportSoftFailure({ selector, actionType: action.actionType });
         if (!done) { setTimeout(() => this.runGoalTurn(), 200); return; }
       } else {
         this.goalFailureCount = 0;
+        // Only reset failedSelectors on a successful page change (not just DOM noise)
+        if (this.goalFailedSelectors.size > 0 && this.goalTurnCount > 0) {
+          this.goalFailedSelectors.clear();
+        }
       }
     } else {
       this.handleAgentAction(action, document.createElement('div'), null);
     }
 
     if (done) {
-      this.goalRunning = false;
-      this.goalMode = false;
+      if (this.planActive) {
+        updatePlanPhase(this.planPhases[this.planCurrentPhaseIdx].id, 'done');
+        this.planCurrentPhaseIdx++;
+        this.goalRunning = false;
+        setTimeout(() => this.startNextPlanPhase(), 800);
+      } else {
+        this.goalRunning = false;
+        this.goalMode = false;
+      }
       return;
     }
 

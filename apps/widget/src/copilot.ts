@@ -4,7 +4,7 @@
 
 import { scanPage, buildSemanticSummary } from './scanner';
 import { resolveFromIndex, HealStrategy } from './resolver';
-import { spotlight, beacon, arrowCallout, multiHighlight, removeSpotlight } from './highlighter';
+import { spotlight, beacon, arrowCallout, multiHighlight, removeSpotlight, hoverTip } from './highlighter';
 import { animatedFillFields } from './cursor';
 
 export interface CopilotStep {
@@ -43,6 +43,12 @@ export function matchesUrlPattern(pattern: string, url: string = window.location
     const regex = new RegExp('^' + p.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
     return regex.test(url);
   });
+}
+
+export interface GoalPlanPhase {
+  id: string;
+  title: string;
+  description: string;
 }
 
 export type AgentAction =
@@ -148,6 +154,30 @@ export class CopilotManager {
   constructor(apiKey: string, apiUrl: string) {
     this.apiKey = apiKey;
     this.apiUrl = apiUrl;
+
+    // Phase 5: pre-warm the backend DB connection pool during browser idle time
+    // so the first real agent turn doesn't pay cold-start latency.
+    // Uses requestIdleCallback if available, falls back to 2s setTimeout.
+    this.scheduleWarmup();
+  }
+
+  private scheduleWarmup(): void {
+    const doWarmup = () => {
+      fetch(`${this.apiUrl}/api/v1/session/warmup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': this.apiKey },
+        body: '{}',
+      }).catch(() => {}); // fully fire-and-forget
+    };
+
+    if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+      // Fire during browser idle time — zero impact on main thread
+      (window as Window & { requestIdleCallback: (cb: () => void, opts?: { timeout: number }) => void })
+        .requestIdleCallback(doWarmup, { timeout: 3000 });
+    } else {
+      // Fallback: fire after 2 seconds (enough time for page to be interactive)
+      setTimeout(doWarmup, 2000);
+    }
   }
 
   onAction(cb: (action: AgentAction) => void) {
@@ -419,13 +449,30 @@ export class CopilotManager {
     return this.session?.id ?? null;
   }
 
+  async sendPlanRequest(goal: string): Promise<GoalPlanPhase[] | null> {
+    const pageContext = scanPage();
+    try {
+      const res = await fetch(`${this.apiUrl}/api/v1/session/act/plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': this.apiKey },
+        body: JSON.stringify({ sessionId: this.session?.id ?? 'plan_session', goal, pageContext }),
+      });
+      if (!res.ok) return null;
+      const data = await res.json() as { phases: GoalPlanPhase[] };
+      return data.phases;
+    } catch {
+      return null;
+    }
+  }
+
   async sendGoalMessage(opts: {
     goal: string;
     turnHistory: Array<{ role: 'user' | 'assistant' | 'observe'; content: string }>;
     turnCount: number;
+    failedSelectors?: string[];
     onText?: (word: string) => void;
   }): Promise<{ action: AgentAction; done: boolean; turnCount: number } | null> {
-    const { goal, turnHistory, turnCount } = opts;
+    const { goal, turnHistory, turnCount, failedSelectors } = opts;
     const pageContext = scanPage();
     const enrichedContext = { ...pageContext, semanticSummary: buildSemanticSummary() };
 
@@ -439,6 +486,7 @@ export class CopilotManager {
           pageContext: enrichedContext,
           turnHistory,
           turnCount,
+          failedSelectors: failedSelectors ?? [],
         }),
       });
       if (!res.ok) return null;
@@ -570,6 +618,19 @@ export class CopilotManager {
 
       if (resolvedSelectors.length > 0) {
         multiHighlight(resolvedSelectors, labels, duration, color);
+      }
+    }
+
+    if (actionType === 'hover_tip') {
+      const selector = payload.selector as string;
+      const text = payload.text as string;
+      const tipColor = (payload.color as string) || undefined;
+      if (selector && text) {
+        const result = resolveFromIndex(selector);
+        if (result) {
+          if (result.healed) this.reportHeal({ originalSelector: selector, usedSelector: result.usedSelector, strategy: result.strategy, actionType });
+          hoverTip(result.usedSelector ?? selector, text, tipColor);
+        }
       }
     }
   }

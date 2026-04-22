@@ -4,7 +4,7 @@ import { prisma } from '../lib/prisma';
 import { authenticateApiKey } from '../middleware/auth';
 import { getMtuUsage } from '../middleware/rateLimit';
 import { PLANS } from '../lib/plans';
-import { runAgentSafe, runAgentStream, runAgentGoal, GoalTurn } from '../services/agent';
+import { runAgentSafe, runAgentStream, runAgentGoal, runAgentPlan, GoalTurn } from '../services/agent';
 import { detectIntent } from '../services/intent';
 import { detectLanguage, translateText, transcribeAudio, synthesizeSpeech, isSarvamEnabled } from '../services/sarvam';
 
@@ -58,6 +58,21 @@ async function getOrCreateEndUser(orgId: string, userId: string, metadata: Recor
     update: { metadata: metadata as Prisma.InputJsonValue, lastSeenAt: new Date() },
   });
 }
+
+// ─── POST /api/v1/session/warmup ─────────────────────────────────────────────
+// Phase 5: called by the widget on idle init to pre-warm DB connection pool and
+// Prisma client before the user types anything. Returns 200 immediately.
+// No DB writes — just a lightweight ping that keeps the connection warm.
+router.post('/warmup', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    // Fire-and-forget: validate org key is valid (already done by middleware)
+    // and ping the DB so connection pool is warm for the real first request.
+    prisma.$queryRaw`SELECT 1`.catch(() => {});
+    res.json({ warmed: true, ts: Date.now() });
+  } catch {
+    res.json({ warmed: false });
+  }
+});
 
 // ─── GET /api/v1/session?userId=&flowId= ─────────────────────────────────────
 // Returns the user's current onboarding session + current step info
@@ -947,6 +962,22 @@ router.post('/act/stream', async (req: AuthenticatedRequest, res: Response) => {
   } finally {
     res.end();
   }
+});
+
+// ─── POST /api/v1/session/act/plan — decompose goal into phases ──────────────
+router.post('/act/plan', async (req: AuthenticatedRequest, res: Response) => {
+  const { goal, pageContext } = req.body as {
+    goal: string;
+    pageContext?: import('../services/agent').PageContext;
+  };
+
+  if (!goal || goal.length > 500) {
+    res.status(400).json({ error: 'goal required, max 500 chars' });
+    return;
+  }
+
+  const phases = await runAgentPlan({ org: req.organization!, goal, pageContext });
+  res.json({ phases });
 });
 
 // ─── POST /api/v1/session/act/goal — ReAct goal mode ─────────────────────────

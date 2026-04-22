@@ -144,10 +144,11 @@ export function scanPage(): PageContext {
     // Skip sensitive autocomplete hints (credit card, passwords)
     const ac = el.getAttribute('autocomplete') ?? '';
     if (SENSITIVE_AUTOCOMPLETE.has(ac)) return;
-    // Skip any field whose name/id looks like a password field
+    // Skip any field whose name/id looks sensitive (password, SSN, credit card, etc.)
     const nameAttr = (el.getAttribute('name') ?? '').toLowerCase();
     const idAttr   = (el.getAttribute('id')   ?? '').toLowerCase();
-    if (nameAttr.includes('password') || idAttr.includes('password')) return;
+    const combined = nameAttr + ' ' + idAttr;
+    if (/password|passwd|secret|ssn|social.?security|credit.?card|card.?number|cvv|cvc|pin\b/.test(combined)) return;
 
     const text =
       labelFor(el) ||
