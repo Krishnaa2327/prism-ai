@@ -59,6 +59,21 @@ async function getOrCreateEndUser(orgId: string, userId: string, metadata: Recor
   });
 }
 
+// ─── POST /api/v1/session/warmup ─────────────────────────────────────────────
+// Phase 5: called by the widget on idle init to pre-warm DB connection pool and
+// Prisma client before the user types anything. Returns 200 immediately.
+// No DB writes — just a lightweight ping that keeps the connection warm.
+router.post('/warmup', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    // Fire-and-forget: validate org key is valid (already done by middleware)
+    // and ping the DB so connection pool is warm for the real first request.
+    prisma.$queryRaw`SELECT 1`.catch(() => {});
+    res.json({ warmed: true, ts: Date.now() });
+  } catch {
+    res.json({ warmed: false });
+  }
+});
+
 // ─── GET /api/v1/session?userId=&flowId= ─────────────────────────────────────
 // Returns the user's current onboarding session + current step info
 router.get('/', async (req: AuthenticatedRequest, res: Response) => {

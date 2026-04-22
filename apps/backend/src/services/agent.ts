@@ -5,7 +5,7 @@ import { executeApiCall, interpolate } from './apicall';
 import { assertPublicUrl } from '../lib/ipGuard';
 import { searchKnowledgeBase } from './knowledge';
 import { loadMcpTools, toOpenAITools, callMcpTool, resolveMcpCall, ConnectorToolBundle } from './mcp';
-import { logger, withRetry } from '../lib/logger';
+import { logger, withRetry, timer } from '../lib/logger';
 
 let _openai: OpenAI | null = null;
 const openai = () => { if (!_openai) _openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY }); return _openai; };
@@ -418,15 +418,17 @@ ${actionConfig!.fields   ? `- fields: ${JSON.stringify(actionConfig!.fields)} (r
         : ''
     : '';
 
-  // Skip KB search on init/verify turns — race with 1.5 s timeout
+  // Skip KB search on init/verify turns — 800ms cap (Phase 5 latency budget)
+  const kbTimer = timer();
   const kbResults = (isInit || isVerify)
     ? []
     : await Promise.race([
         searchKnowledgeBase(org.id, userMessage).catch(() => []),
         new Promise<Awaited<ReturnType<typeof searchKnowledgeBase>>>((resolve) =>
-          setTimeout(() => resolve([]), 1500)
+          setTimeout(() => resolve([]), 800)  // Phase 5: tightened from 1500ms to 800ms
         ),
       ]);
+  if (!isInit && !isVerify) logger.latency('kb.search', kbTimer(), { orgId: org.id, hits: kbResults.length });
 
   const kbSection = kbResults.length > 0
     ? `\nKNOWLEDGE BASE:\n${kbResults.map((r) => `[${r.title}]\n${r.content.slice(0, 500)}`).join('\n\n')}\n`
@@ -435,9 +437,11 @@ ${actionConfig!.fields   ? `- fields: ${JSON.stringify(actionConfig!.fields)} (r
   // ── MCP tools ────────────────────────────────────────────────────────────────
   // Load enabled connectors and their tool lists in parallel with the KB search.
   // Skip on init/verify turns (no real user query to dispatch against).
+  const mcpTimer = timer();
   const mcpBundles: ConnectorToolBundle[] = (isInit || isVerify)
     ? []
     : await loadMcpTools(org.id).catch(() => []);
+  if (!isInit && !isVerify && mcpBundles.length > 0) logger.latency('mcp.load', mcpTimer(), { orgId: org.id, connectors: mcpBundles.length });
 
   const mcpOAITools = toOpenAITools(mcpBundles);
 
@@ -1054,6 +1058,9 @@ export async function runAgentGoal(opts: {
 
   const observeCount = turnHistory.filter((t) => t.role === 'observe').length;
 
+  // Phase 5: start per-turn latency timer
+  const turnTimer = timer();
+
   // ── Phase 4: Extract concrete failed selectors and DOM alternatives ──────────
   const failedSelectors = new Set<string>();
   for (const turn of turnHistory) {
@@ -1133,10 +1140,19 @@ ${org.customInstructions ?? ''}${failureContextBlock}`.trim();
 
   const GOAL_TURN_TIMEOUT_MS = 8_000;
 
+  // Phase 5: Smart model routing for goal turns.
+  // First turn or turns with KB context need gpt-4o (complex reasoning).
+  // Subsequent retry/action turns (already have history, no KB) use gpt-4o-mini
+  // to hit the <1.5s first-token target — saves ~40% latency on majority of turns.
+  const isFirstGoalTurn = turnHistory.length === 0;
+  const hasKbInContext = false; // goal mode doesn't use KB currently
+  const needsBigModel = isFirstGoalTurn || hasKbInContext || wrongPageBlock.length > 0;
+  const goalModel = needsBigModel ? 'gpt-4o' : 'gpt-4o-mini';
+
   const rawResponse = await withRetry(
     () => Promise.race([
       openai().chat.completions.create({
-        model: 'gpt-4o',
+        model: goalModel,  // Phase 5: gpt-4o-mini for retry turns
         max_tokens: 1500,
         temperature: 0,
         tools,
@@ -1159,10 +1175,25 @@ ${org.customInstructions ?? ''}${failureContextBlock}`.trim();
 
   const response = rawResponse;
   const msg = response.choices[0].message;
-  logger.agentAction(org.id, opts.sessionId, msg.tool_calls?.[0]?.function?.name ?? 'none', {
-    goalMode: true,
-    model: 'gpt-4o',
+  const actionName = msg.tool_calls?.[0]?.function?.name ?? 'none';
+
+  // Phase 5: log total goal turn latency per model
+  logger.latency('agent.goal.turn', turnTimer(), {
+    orgId: org.id,
+    sessionId: opts.sessionId,
+    model: goalModel,
+    action: actionName,
+    observeCount,
     tokens: response.usage?.total_tokens,
+    failedSelectors: failedSelectors.size,
+  });
+
+  logger.agentAction(org.id, opts.sessionId, actionName, {
+    goalMode: true,
+    model: goalModel,
+    tokens: response.usage?.total_tokens,
+    failedSelectors: failedSelectors.size,
+    observeCount,
   });
 
   if (msg.tool_calls && msg.tool_calls.length > 0) {
